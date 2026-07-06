@@ -42,7 +42,7 @@ from tkinter import filedialog, messagebox
 
 # Bump this with every release you publish -- it's what gets compared
 # against the GitHub release tag to decide if an update is available.
-APP_VERSION = "1.1.0"
+APP_VERSION = "1.3.0"
 
 # Baked-in update credentials -- generated fresh by the CI build (see
 # .github/workflows/build-release.yml) right before PyInstaller runs, so
@@ -274,26 +274,71 @@ def download_release_asset(repo: str, token: str, asset_id, dest_path: Path):
         resp.close()
 
 
-def _write_updater_script(target_exe: Path, new_exe: Path, pid: int) -> Path:
-    """A tiny batch script that waits for this process (by PID) to exit,
-    then swaps the downloaded exe into place and relaunches it. Windows
-    won't let a running exe overwrite itself, so the app has to hand off
-    to something else for the actual file swap."""
-    bat_path = target_exe.parent / "pcbridge_update.bat"
-    script = (
-        "@echo off\r\n"
-        ":waitloop\r\n"
-        f'tasklist /fi "PID eq {pid}" | find "{pid}" >nul\r\n'
-        "if not errorlevel 1 (\r\n"
-        "    timeout /t 1 /nobreak >nul\r\n"
-        "    goto waitloop\r\n"
-        ")\r\n"
-        f'move /y "{new_exe}" "{target_exe}" >nul\r\n'
-        f'start "" "{target_exe}"\r\n'
-        'del "%~f0"\r\n'
-    )
-    bat_path.write_text(script)
-    return bat_path
+def _write_updater_script(target_exe: Path, new_exe: Path, pid: int, expected_size: int) -> Path:
+    """A PowerShell script that waits for this process to exit, then
+    swaps the downloaded exe into place and relaunches it. Windows won't
+    let a running exe overwrite itself, so the app has to hand off to
+    something else for the actual file swap.
+
+    Rewritten from an earlier plain-batch version after a real failure:
+    the batch version would blindly `move` then `start` with no error
+    checking, and a user hit a corrupted-looking relaunch (PyInstaller's
+    "pyi_rth_inspect" / missing base_library.zip -- almost certainly
+    antivirus quarantining/altering the freshly-downloaded, freshly-
+    launched-by-another-program exe, which is exactly the pattern
+    heuristic AVs flag hardest). This version retries the move a few
+    times (rides out a transient lock), verifies the moved file's size
+    against what was actually downloaded before ever launching it, and
+    logs every step to pcbridge_update.log next to config.json so a
+    failure like that is diagnosable instead of just a cryptic crash
+    dialog with nothing to go on."""
+    ps1_path = target_exe.parent / "pcbridge_update.ps1"
+    log_path = target_exe.parent / "pcbridge_update.log"
+    script = f"""$ErrorActionPreference = "Stop"
+$logPath = "{log_path}"
+function Log($msg) {{
+    Add-Content -Path $logPath -Value "$(Get-Date -Format o)  $msg"
+}}
+
+try {{
+    Wait-Process -Id {pid} -ErrorAction SilentlyContinue
+
+    $target = "{target_exe}"
+    $newFile = "{new_exe}"
+    $expectedSize = {expected_size}
+
+    $moved = $false
+    for ($i = 0; $i -lt 10 -and -not $moved; $i++) {{
+        try {{
+            Move-Item -Path $newFile -Destination $target -Force
+            $moved = $true
+        }} catch {{
+            Log "Move attempt $i failed: $_"
+            Start-Sleep -Seconds 1
+        }}
+    }}
+
+    if (-not $moved) {{
+        Log "Giving up: could not move update into place after 10 attempts."
+        exit 1
+    }}
+
+    $actualSize = (Get-Item $target).Length
+    if ($expectedSize -gt 0 -and $actualSize -ne $expectedSize) {{
+        Log "Size mismatch after move: expected $expectedSize, got $actualSize -- not launching a possibly-corrupt exe."
+        exit 1
+    }}
+
+    Start-Process -FilePath $target
+    Log "Update applied successfully ($actualSize bytes), relaunched."
+}} catch {{
+    Log "Updater script failed: $_"
+}}
+
+Remove-Item -Path $MyInvocation.MyCommand.Path -Force -ErrorAction SilentlyContinue
+"""
+    ps1_path.write_text(script)
+    return ps1_path
 
 
 # ---------- tray icon ----------
@@ -588,11 +633,13 @@ class App:
                         "file was attached to that release.",
                     ))
                 return
-            self.root.after(0, lambda: self._prompt_update(latest, repo, token, asset["id"]))
+            self.root.after(0, lambda: self._prompt_update(
+                latest, repo, token, asset["id"], asset.get("size", 0)
+            ))
 
         threading.Thread(target=worker, daemon=True).start()
 
-    def _prompt_update(self, latest, repo, token, asset_id):
+    def _prompt_update(self, latest, repo, token, asset_id, expected_size=0):
         if not messagebox.askyesno(
             "PC Bridge",
             f"Version {latest} is available (you have v{APP_VERSION}). "
@@ -605,16 +652,26 @@ class App:
             dest = app_dir() / "PCBridge_update.exe"
             try:
                 download_release_asset(repo, token, asset_id, dest)
+                actual_size = dest.stat().st_size
+                if expected_size and actual_size != expected_size:
+                    dest.unlink(missing_ok=True)
+                    raise RuntimeError(
+                        f"Downloaded {actual_size} bytes but GitHub said this "
+                        f"release is {expected_size} bytes -- the download "
+                        "looks incomplete or was altered (antivirus tools "
+                        "sometimes strip freshly-downloaded exes). Try again "
+                        "in a moment."
+                    )
             except Exception as e:
                 self.root.after(0, lambda: messagebox.showerror(
                     "PC Bridge", f"Update download failed:\n{e}"
                 ))
                 return
-            self.root.after(0, lambda: self._install_update(dest))
+            self.root.after(0, lambda: self._install_update(dest, expected_size))
 
         threading.Thread(target=worker, daemon=True).start()
 
-    def _install_update(self, new_exe_path: Path):
+    def _install_update(self, new_exe_path: Path, expected_size: int = 0):
         if not getattr(sys, "frozen", False):
             messagebox.showinfo(
                 "PC Bridge",
@@ -625,10 +682,15 @@ class App:
             return
 
         target_exe = Path(sys.executable).resolve()
-        bat_path = _write_updater_script(target_exe, new_exe_path, os.getpid())
+        size = expected_size or new_exe_path.stat().st_size
+        ps1_path = _write_updater_script(target_exe, new_exe_path, os.getpid(), size)
 
         creationflags = subprocess.CREATE_NO_WINDOW if sys.platform == "win32" else 0
-        subprocess.Popen(["cmd", "/c", str(bat_path)], creationflags=creationflags, close_fds=True)
+        subprocess.Popen(
+            ["powershell", "-NoProfile", "-ExecutionPolicy", "Bypass",
+             "-WindowStyle", "Hidden", "-File", str(ps1_path)],
+            creationflags=creationflags, close_fds=True,
+        )
 
         server.stop()
         self.icon.stop()

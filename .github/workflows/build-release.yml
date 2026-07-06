@@ -14,6 +14,15 @@ name: Build and release PCBridge.exe
 # UPDATE_TOKEN (Settings -> Secrets and variables -> Actions -> New
 # repository secret) set to the same fine-grained PAT described in
 # README-DESKTOP.md.
+#
+# Also builds PCBridge-Setup.exe (installer/PCBridge.iss, via Inno
+# Setup) -- a proper per-user installer with a Start Menu/Desktop icon
+# and an uninstaller entry, for anyone who'd rather not manage a
+# portable exe themselves. Both files get attached to the Release: the
+# installer for new installs, and the plain PCBridge.exe for anyone
+# already running who just needs auto-update to fetch a fresh copy
+# (auto-update always looks for an asset literally named
+# "PCBridge.exe" -- don't rename that one).
 
 on:
   push:
@@ -53,8 +62,21 @@ jobs:
       - name: Build PCBridge.exe
         run: python -m PyInstaller --onefile --windowed --name "PCBridge" --icon icon.ico --add-data "static;static" pcbridge_app.py
 
+      - name: Install Inno Setup
+        run: choco install innosetup -y --no-progress
+
+      - name: Get version number from the tag (strip leading 'v')
+        id: version
+        shell: bash
+        run: echo "number=${GITHUB_REF_NAME#v}" >> "$GITHUB_OUTPUT"
+
+      - name: Build PCBridge-Setup.exe
+        run: '& "C:\Program Files (x86)\Inno Setup 6\ISCC.exe" "/DAppVersion=${{ steps.version.outputs.number }}" installer\PCBridge.iss'
+
       - name: Publish GitHub Release
         uses: softprops/action-gh-release@v2
         with:
-          files: dist/PCBridge.exe
+          files: |
+            dist/PCBridge.exe
+            installer/installer_output/PCBridge-Setup.exe
           generate_release_notes: true
