@@ -1,0 +1,96 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+<title>PC Bridge</title>
+<meta name="theme-color" content="#1c1f24" />
+<link rel="manifest" href="/manifest.json" />
+<link rel="apple-touch-icon" href="/icons/icon-192.png" />
+<meta name="apple-mobile-web-app-capable" content="yes" />
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
+<meta name="apple-mobile-web-app-title" content="PC Bridge" />
+<link rel="stylesheet" href="/style.css" />
+</head>
+<body>
+
+<div id="pin-screen" class="screen">
+  <div class="pin-card">
+    <h1>PC Bridge</h1>
+    <p>Enter the PIN shown in the server console on your PC.</p>
+    <input id="pin-input" type="tel" inputmode="numeric" pattern="[0-9]*" maxlength="6" placeholder="PIN" autofocus />
+    <button id="pin-submit">Connect</button>
+    <p id="pin-error" class="error"></p>
+  </div>
+</div>
+
+<div id="app-screen" class="screen hidden">
+  <header>
+    <button id="stats-btn" title="Devices">☰</button>
+    <div id="breadcrumbs"></div>
+    <div id="header-actions">
+      <button id="select-toggle-btn" title="Select files">☑</button>
+      <button id="logout-btn" title="More options">⋯</button>
+    </div>
+  </header>
+
+  <main id="file-list"></main>
+
+  <div id="drop-hint" class="hidden">Drop files to upload</div>
+
+  <div class="fab-group">
+    <button id="new-folder-btn" class="fab fab-secondary" title="New folder">📁+</button>
+    <button id="upload-btn" class="fab" title="Upload">＋</button>
+  </div>
+
+  <input type="file" id="file-input" multiple class="hidden" />
+  <input type="file" id="folder-input" multiple webkitdirectory directory class="hidden" />
+
+  <div id="action-sheet" class="sheet hidden">
+    <div class="sheet-inner">
+      <div id="sheet-title" class="sheet-title"></div>
+      <button data-action="download">Download</button>
+      <button data-action="rename">Rename</button>
+      <button data-action="delete" class="danger">Delete</button>
+      <button data-action="cancel">Cancel</button>
+    </div>
+  </div>
+
+  <div id="menu-sheet" class="sheet hidden">
+    <div class="sheet-inner">
+      <div class="sheet-title">More options</div>
+      <button data-menu-action="reenter-pin">Re-enter PIN</button>
+      <button id="menu-change-address" data-menu-action="change-address" class="hidden">Change PC address</button>
+      <button id="menu-reload" data-menu-action="reload" class="hidden">Reload page</button>
+      <button data-menu-action="cancel">Cancel</button>
+    </div>
+  </div>
+
+  <div id="select-bar" class="hidden">
+    <span id="select-count">0 selected</span>
+    <div class="select-bar-actions">
+      <button id="select-download-btn">Download</button>
+      <button id="select-delete-btn" class="danger">Delete</button>
+      <button id="select-cancel-btn">Cancel</button>
+    </div>
+  </div>
+
+  <div id="upload-progress" class="hidden">
+    <div id="upload-progress-bar"></div>
+    <span id="upload-progress-text"></span>
+  </div>
+
+  <div id="device-drawer" class="sheet hidden">
+    <div class="drawer-inner">
+      <div class="drawer-header">
+        <span>Devices</span>
+        <button id="drawer-close-btn">✕</button>
+      </div>
+      <div id="device-cards"></div>
+    </div>
+  </div>
+</div>
+
+<script src="/app.js"></script>
+</body>
+</html>

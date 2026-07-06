@@ -1,0 +1,24 @@
+# Python
+__pycache__/
+*.pyc
+*.pyo
+
+# Local config/logs (contains your real PIN + folder path -- don't publish)
+config.json
+pcbridge.log
+
+# PyInstaller build output
+build/
+dist/
+
+# Android / Gradle
+android/.gradle/
+android/.idea/
+android/local.properties
+android/app/build/
+android/build/
+*.iml
+
+# OS cruft
+.DS_Store
+Thumbs.db

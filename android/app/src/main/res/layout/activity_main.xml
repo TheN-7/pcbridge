@@ -1,0 +1,92 @@
+<?xml version="1.0" encoding="utf-8"?>
+<FrameLayout xmlns:android="http://schemas.android.com/apk/res/android"
+    android:layout_width="match_parent"
+    android:layout_height="match_parent">
+
+    <WebView
+        android:id="@+id/webview"
+        android:layout_width="match_parent"
+        android:layout_height="match_parent" />
+
+    <!--
+      "Change PC address" and "reload" used to be a small floating wrench
+      button overlaid on top of the WebView -- it visually collided with
+      the web header's own icons in the same top-right corner. Both actions
+      now live inside the web UI's "⋯" menu instead (see WebAppInterface
+      .changeServerAddress()/.reloadPage() below), so there's no more
+      separately-positioned native view up here.
+    -->
+
+    <!--
+      Covers the WebView until the user authenticates. Visible by default so
+      nothing behind it is shown before the biometric/device-credential
+      check runs.
+    -->
+    <LinearLayout
+        android:id="@+id/lock_overlay"
+        android:layout_width="match_parent"
+        android:layout_height="match_parent"
+        android:background="#16191D"
+        android:orientation="vertical"
+        android:gravity="center"
+        android:visibility="visible">
+
+        <TextView
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:text="🔒"
+            android:textSize="48sp"
+            android:layout_marginBottom="16dp" />
+
+        <TextView
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:text="PC Bridge is locked"
+            android:textColor="#F4F5F7"
+            android:textSize="16sp"
+            android:layout_marginBottom="16dp" />
+
+        <Button
+            android:id="@+id/unlock_button"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:backgroundTint="#38BDF8"
+            android:textColor="#0C2733"
+            android:text="Unlock" />
+
+    </LinearLayout>
+
+    <!--
+      Cold-start splash, shown briefly over everything (including the lock
+      screen) so the app never flashes a blank/white WebView frame before
+      it's ready. Drawn last = topmost in this FrameLayout. MainActivity
+      hides it after a short fixed delay, then hands off to the lock screen
+      (or the first-run "enter PC address" dialog).
+    -->
+    <LinearLayout
+        android:id="@+id/splash_overlay"
+        android:layout_width="match_parent"
+        android:layout_height="match_parent"
+        android:background="#16191D"
+        android:orientation="vertical"
+        android:gravity="center"
+        android:visibility="visible">
+
+        <ImageView
+            android:layout_width="96dp"
+            android:layout_height="96dp"
+            android:src="@mipmap/ic_launcher"
+            android:contentDescription="@string/app_name" />
+
+        <TextView
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:text="@string/app_name"
+            android:textColor="#F4F5F7"
+            android:textSize="20sp"
+            android:textStyle="bold"
+            android:layout_marginTop="16dp" />
+
+    </LinearLayout>
+
+</FrameLayout>
