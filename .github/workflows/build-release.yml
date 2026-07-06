@@ -1,0 +1,44 @@
+name: Build and release PCBridge.exe
+
+# Push a version tag (e.g. `git tag v1.2.0 && git push origin v1.2.0`) to
+# trigger this. It builds PCBridge.exe on a real Windows runner and
+# attaches it to a GitHub Release named after the tag -- no local
+# Windows machine or PyInstaller install needed to publish an update.
+# Already-running copies of the app (see pcbridge_app.py's auto-update)
+# pick up the new release on their own.
+
+on:
+  push:
+    tags:
+      - "v*.*.*"
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: windows-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install dependencies
+        run: |
+          pip install -r requirements.txt
+          pip install pyinstaller
+
+      - name: Convert PWA icon to .ico
+        run: python -c "from PIL import Image; Image.open('static/icons/icon-192.png').save('icon.ico')"
+
+      - name: Build PCBridge.exe
+        run: python -m PyInstaller --onefile --windowed --name "PCBridge" --icon icon.ico --add-data "static;static" pcbridge_app.py
+
+      - name: Publish GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: dist/PCBridge.exe
+          generate_release_notes: true

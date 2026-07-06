@@ -19,17 +19,30 @@ How this file is used, in two different ways:
      packaged single-file EXE has no separate server.py sitting on disk
      to relaunch, so re-invoking itself with a flag is the standard way
      to give a frozen app a "worker" mode.
+
+Auto-update: checks a GitHub repo's latest Release for a newer version
+and, if you confirm, downloads the new PCBridge.exe and swaps it in --
+see the "auto-update" section below and README-DESKTOP.md for how to
+configure and publish releases.
 """
 
 import json
+import os
 import secrets
+import shutil
 import socket
 import subprocess
 import sys
 import threading
 import tkinter as tk
+import urllib.error
+import urllib.request
 from pathlib import Path
 from tkinter import filedialog, messagebox
+
+# Bump this with every release you publish -- it's what gets compared
+# against the GitHub release tag to decide if an update is available.
+APP_VERSION = "1.1.0"
 
 BASE_DIR = Path(__file__).resolve().parent
 
@@ -59,7 +72,17 @@ CONFIG_PATH = app_dir() / "config.json"
 
 
 def load_config() -> dict:
-    default = {"root_dir": str(Path.home()), "port": 8000, "pin": None}
+    default = {
+        "root_dir": str(Path.home()),
+        "port": 8000,
+        "pin": None,
+        # Auto-update settings -- see README-DESKTOP.md. Both must be set
+        # for update checks to run at all; left unset, the feature is a
+        # silent no-op so this doesn't break setups that don't want it.
+        "update_repo": None,   # "yourusername/pcbridge"
+        "update_token": None,  # fine-grained PAT, read-only, this repo only
+        "auto_check_updates": True,
+    }
     if CONFIG_PATH.exists():
         try:
             data = json.loads(CONFIG_PATH.read_text())
@@ -142,6 +165,122 @@ class ServerProcess:
 server = ServerProcess()
 
 
+# ---------- auto-update ----------
+#
+# Checks a GitHub repo's latest Release (private repo -> needs a token)
+# for a version newer than APP_VERSION, downloads the "PCBridge.exe"
+# asset attached to that release, and swaps it in for the running exe.
+#
+# To publish an update: bump APP_VERSION above, build a new PCBridge.exe
+# (see README-DESKTOP.md), create a GitHub Release tagged e.g. "v1.2.0",
+# and attach the exe as an asset named exactly "PCBridge.exe". Existing
+# installs pick it up next time they check.
+
+GITHUB_API = "https://api.github.com"
+UPDATE_ASSET_NAME = "PCBridge.exe"
+
+
+def _parse_version(v: str) -> tuple:
+    v = (v or "").strip().lstrip("vV")
+    parts = []
+    for chunk in v.split("."):
+        digits = ""
+        for ch in chunk:
+            if ch.isdigit():
+                digits += ch
+            else:
+                break
+        parts.append(int(digits) if digits else 0)
+    return tuple(parts) if parts else (0,)
+
+
+def is_newer(latest: str, current: str) -> bool:
+    return _parse_version(latest) > _parse_version(current)
+
+
+def fetch_latest_release(repo: str, token: str) -> dict:
+    """repo is 'owner/name'. Raises urllib.error.* / OSError on failure."""
+    req = urllib.request.Request(
+        f"{GITHUB_API}/repos/{repo}/releases/latest",
+        headers={
+            "Authorization": f"token {token}",
+            "Accept": "application/vnd.github+json",
+            "User-Agent": "PCBridge-Updater",
+        },
+    )
+    with urllib.request.urlopen(req, timeout=15) as resp:
+        return json.loads(resp.read().decode("utf-8"))
+
+
+def find_asset(release: dict, name: str = UPDATE_ASSET_NAME):
+    for asset in release.get("assets", []):
+        if asset.get("name", "").lower() == name.lower():
+            return asset
+    return None
+
+
+class _NoRedirect(urllib.request.HTTPErrorProcessor):
+    """Prevents urllib from auto-following the redirect GitHub sends for
+    a private-repo release asset (a presigned, unauthenticated S3 URL).
+    We need to strip the GitHub Authorization header before that second
+    request -- S3 rejects the request with it still attached."""
+
+    def http_response(self, request, response):
+        return response
+
+    https_response = http_response
+
+
+def download_release_asset(repo: str, token: str, asset_id, dest_path: Path):
+    url = f"{GITHUB_API}/repos/{repo}/releases/assets/{asset_id}"
+    req = urllib.request.Request(
+        url,
+        headers={
+            "Authorization": f"token {token}",
+            "Accept": "application/octet-stream",
+            "User-Agent": "PCBridge-Updater",
+        },
+    )
+    opener = urllib.request.build_opener(_NoRedirect)
+    resp = opener.open(req, timeout=15)
+    try:
+        if resp.status in (301, 302, 303, 307, 308):
+            redirect_url = resp.headers.get("Location")
+            resp.close()
+            with urllib.request.urlopen(redirect_url, timeout=120) as final, \
+                    open(dest_path, "wb") as f:
+                shutil.copyfileobj(final, f)
+        elif resp.status == 200:
+            with open(dest_path, "wb") as f:
+                shutil.copyfileobj(resp, f)
+        else:
+            raise RuntimeError(f"unexpected status {resp.status} downloading asset")
+    finally:
+        resp.close()
+
+
+def _write_updater_script(target_exe: Path, new_exe: Path, pid: int) -> Path:
+    """A tiny batch script that waits for this process (by PID) to exit,
+    then swaps the downloaded exe into place and relaunches it. Windows
+    won't let a running exe overwrite itself, so the app has to hand off
+    to something else for the actual file swap."""
+    bat_path = target_exe.parent / "pcbridge_update.bat"
+    script = (
+        "@echo off\r\n"
+        ":waitloop\r\n"
+        f'tasklist /fi "PID eq {pid}" | find "{pid}" >nul\r\n'
+        "if not errorlevel 1 (\r\n"
+        "    timeout /t 1 /nobreak >nul\r\n"
+        "    goto waitloop\r\n"
+        ")\r\n"
+        f'move /y "{new_exe}" "{target_exe}" >nul\r\n'
+        f'start "" "{target_exe}"\r\n'
+        'del "%~f0"\r\n'
+    )
+    bat_path.write_text(script)
+    return bat_path
+
+
 # ---------- tray icon ----------
 
 def build_tray_image():
@@ -156,7 +295,7 @@ def build_tray_image():
         return Image.new("RGB", (64, 64), BLUE)
 
 
-def build_tray_icon(on_open, on_toggle, on_quit):
+def build_tray_icon(on_open, on_toggle, on_check_updates, on_quit):
     import pystray
 
     return pystray.Icon(
@@ -169,6 +308,7 @@ def build_tray_icon(on_open, on_toggle, on_quit):
                 lambda item: "Stop server" if server.running else "Start server",
                 on_toggle,
             ),
+            pystray.MenuItem("Check for updates", on_check_updates),
             pystray.Menu.SEPARATOR,
             pystray.MenuItem("Quit", on_quit),
         ),
@@ -191,10 +331,15 @@ class App:
         self.root.protocol("WM_DELETE_WINDOW", self.hide_window)
 
         self._build_ui()
-        self.icon = build_tray_icon(self.on_tray_open, self.on_tray_toggle, self.on_quit)
+        self.icon = build_tray_icon(
+            self.on_tray_open, self.on_tray_toggle, self.on_tray_check_updates, self.on_quit
+        )
         threading.Thread(target=self.icon.run, daemon=True).start()
 
         self.refresh()
+
+        if self.config.get("auto_check_updates", True):
+            self.root.after(2000, lambda: self.check_for_updates(interactive=False))
 
     # ---- layout ----
 
@@ -282,6 +427,18 @@ class App:
             bg=BORDER, fg=TEXT, activebackground=BORDER, activeforeground=TEXT,
             relief="flat", font=("Segoe UI", 9),
         ).pack(anchor="w", padx=12, pady=(0, 12))
+
+        version_row = tk.Frame(self.root, bg=BG)
+        version_row.pack(fill="x", padx=16, pady=(0, 4))
+        tk.Label(
+            version_row, text=f"v{APP_VERSION}", bg=BG, fg=MUTED, font=("Segoe UI", 8)
+        ).pack(side="left")
+        tk.Button(
+            version_row, text="Check for updates",
+            command=lambda: self.check_for_updates(interactive=True),
+            bg=BG, fg=BLUE, activebackground=BG, activeforeground=BLUE,
+            relief="flat", font=("Segoe UI", 8, "underline"), bd=0, cursor="hand2",
+        ).pack(side="left", padx=(8, 0))
 
         self.hint_label = tk.Label(
             self.root, text="", bg=BG, fg=MUTED, font=("Segoe UI", 8), wraplength=300, justify="left"
@@ -373,6 +530,96 @@ class App:
             self.hint_label.config(text="Saved. Restart the server for this to take effect.")
         self._update_display()
 
+    # ---- auto-update ----
+
+    def check_for_updates(self, interactive: bool = False):
+        """Runs the network check on a background thread so it can't
+        freeze the window, then marshals every UI touch back onto the
+        Tkinter main thread via root.after (Tkinter isn't thread-safe)."""
+
+        def worker():
+            repo = self.config.get("update_repo")
+            token = self.config.get("update_token")
+            if not repo or not token:
+                if interactive:
+                    self.root.after(0, lambda: messagebox.showinfo(
+                        "PC Bridge",
+                        "Update checking isn't set up. Add \"update_repo\" "
+                        "(e.g. \"yourname/pcbridge\") and \"update_token\" "
+                        "to config.json -- see README-DESKTOP.md.",
+                    ))
+                return
+            try:
+                release = fetch_latest_release(repo, token)
+            except Exception as e:
+                if interactive:
+                    self.root.after(0, lambda: messagebox.showerror(
+                        "PC Bridge", f"Couldn't check for updates:\n{e}"
+                    ))
+                return
+            latest = release.get("tag_name", "")
+            if not is_newer(latest, APP_VERSION):
+                if interactive:
+                    self.root.after(0, lambda: messagebox.showinfo(
+                        "PC Bridge", f"You're up to date (v{APP_VERSION})."
+                    ))
+                return
+            asset = find_asset(release)
+            if not asset:
+                if interactive:
+                    self.root.after(0, lambda: messagebox.showwarning(
+                        "PC Bridge",
+                        f"Version {latest} is out, but no \"{UPDATE_ASSET_NAME}\" "
+                        "file was attached to that release.",
+                    ))
+                return
+            self.root.after(0, lambda: self._prompt_update(latest, repo, token, asset["id"]))
+
+        threading.Thread(target=worker, daemon=True).start()
+
+    def _prompt_update(self, latest, repo, token, asset_id):
+        if not messagebox.askyesno(
+            "PC Bridge",
+            f"Version {latest} is available (you have v{APP_VERSION}). "
+            "Download and install it now? The app will restart.",
+        ):
+            return
+        self.hint_label.config(text=f"Downloading v{latest}...")
+
+        def worker():
+            dest = app_dir() / "PCBridge_update.exe"
+            try:
+                download_release_asset(repo, token, asset_id, dest)
+            except Exception as e:
+                self.root.after(0, lambda: messagebox.showerror(
+                    "PC Bridge", f"Update download failed:\n{e}"
+                ))
+                return
+            self.root.after(0, lambda: self._install_update(dest))
+
+        threading.Thread(target=worker, daemon=True).start()
+
+    def _install_update(self, new_exe_path: Path):
+        if not getattr(sys, "frozen", False):
+            messagebox.showinfo(
+                "PC Bridge",
+                "You're running from source (python pcbridge_app.py), not "
+                "the packaged exe -- pull the latest code with git instead "
+                "of installing this way.",
+            )
+            return
+
+        target_exe = Path(sys.executable).resolve()
+        bat_path = _write_updater_script(target_exe, new_exe_path, os.getpid())
+
+        creationflags = subprocess.CREATE_NO_WINDOW if sys.platform == "win32" else 0
+        subprocess.Popen(["cmd", "/c", str(bat_path)], creationflags=creationflags, close_fds=True)
+
+        server.stop()
+        self.icon.stop()
+        self.root.destroy()
+        os._exit(0)
+
     # ---- window show/hide, tray callbacks ----
 
     def hide_window(self):
@@ -388,6 +635,9 @@ class App:
 
     def on_tray_toggle(self, icon=None, item=None):
         self.root.after(0, self.on_toggle_clicked)
+
+    def on_tray_check_updates(self, icon=None, item=None):
+        self.root.after(0, lambda: self.check_for_updates(interactive=True))
 
     def on_quit(self, icon=None, item=None):
         def _quit():

@@ -3,9 +3,14 @@ __pycache__/
 *.pyc
 *.pyo
 
-# Local config/logs (contains your real PIN + folder path -- don't publish)
+# Local config/logs (contains your real PIN, folder path, and GitHub
+# update token -- don't publish)
 config.json
 pcbridge.log
+
+# Auto-update runtime artifacts (only appear next to a running install)
+PCBridge_update.exe
+pcbridge_update.bat
 
 # PyInstaller build output
 build/
