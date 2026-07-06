@@ -81,10 +81,37 @@ before it happens, rather than assuming something's wrong.
 
 The app can check your GitHub repo for a newer release and update itself
 -- no need to manually rebuild/redistribute the exe to every machine you
-run it on. It's off by default until you configure it (nothing happens,
-no errors) because it needs a couple of settings:
+run it on. It's off until `update_repo`/`update_token` are set somehow --
+nothing happens, no errors, if they aren't. There are two ways to set
+them, and you can use either or both:
 
-Add these to `config.json`, next to `pin` and `root_dir`:
+### Option A -- baked in automatically by the CI build (recommended)
+
+If you build via `.github/workflows/build-release.yml` (see "Publishing
+an update" below), the resulting `PCBridge.exe` already knows its own
+repo and token -- nobody running that exe has to touch `config.json` at
+all. This needs one one-time setup step:
+
+1. Create a GitHub **fine-grained personal access token**, scoped to
+   *only* the `pcbridge` repo, with **Contents: Read-only** permission
+   (that's the minimum needed to read releases/download assets from a
+   private repo). Create one at github.com -> Settings -> Developer
+   settings -> Personal access tokens -> Fine-grained tokens.
+2. Add it as a **repository secret** (not in any file you commit):
+   your repo -> **Settings** -> **Secrets and variables** -> **Actions**
+   -> **New repository secret** -> name it `UPDATE_TOKEN`, paste the
+   token as the value.
+
+That's it -- every build the workflow produces from then on has this
+baked in. `update_repo` doesn't need a secret at all; the workflow fills
+it in automatically from the repo it's running in.
+
+### Option B -- set manually in config.json
+
+For anything you build yourself locally (the manual PyInstaller command
+below), or to point a specific install at a different repo/token than
+what's baked in (a value here always overrides the baked-in one). Add
+to `config.json`, next to `pin` and `root_dir`:
 
 ```json
 {
@@ -98,22 +125,20 @@ Add these to `config.json`, next to `pin` and `root_dir`:
 ```
 
 - `update_repo` -- your GitHub repo as `owner/name`.
-- `update_token` -- a GitHub **fine-grained personal access token**,
-  scoped to *only* this one repo, with **Contents: Read-only**
-  permission (that's the minimum needed to read releases and download
-  assets from a private repo). Create one at
-  github.com -> Settings -> Developer settings -> Fine-grained tokens.
+- `update_token` -- the same kind of fine-grained token described above.
 - `auto_check_updates` -- `true` checks once on every launch (in
   addition to the "Check for updates" button/tray item, which always
   works on demand); set `false` to only ever check manually.
 
-**Security note:** this token has to live in plaintext in `config.json`
-so the app can read it, and it travels with every copy of the app you
-hand out. Keep it scoped to just this repo with read-only access, and
-rotate/revoke it (same GitHub settings page) if a machine it's on is
-ever compromised or the copy is shared somewhere you didn't intend. If
-the repo doesn't actually need to be private, making it public removes
-the need for a token entirely -- `update_repo` alone is enough.
+**Security note (applies either way):** the token ends up readable
+inside the exe itself -- baked into the binary if built via CI, or
+readable in plaintext in `config.json` if set manually -- and travels
+with every copy you hand out. Keep it scoped to just this repo with
+read-only access, and rotate/revoke it (same GitHub settings page) if a
+machine or copy it's on is ever compromised or shared somewhere you
+didn't intend. If the repo doesn't actually need to be private, making
+it public removes the need for a token entirely -- `update_repo` alone
+is enough.
 
 ### Publishing an update (automatic -- no manual rebuild)
 
@@ -145,11 +170,14 @@ No new Python dependency was needed for either the client updater or
 this workflow -- the updater only uses the standard library (`urllib`),
 so `requirements.txt` didn't change.
 
-**First-time setup:** just push the repo, including the
-`.github/workflows/build-release.yml` file -- nothing else to enable.
-Since the repo is private, Actions is included in GitHub's free tier up
-to a monthly minutes allowance (this build takes a few minutes and you
-publish rarely, so it comfortably fits).
+**First-time setup:** push the repo including
+`.github/workflows/build-release.yml`, and add the `UPDATE_TOKEN`
+repository secret described in "Auto-update" -> "Option A" above (that's
+the only manual step -- without it, the build still succeeds but the
+resulting exe just won't have update-checking baked in). Since the repo
+is private, Actions is included in GitHub's free tier up to a monthly
+minutes allowance (this build takes a few minutes and you publish
+rarely, so it comfortably fits).
 
 **Prefer to build locally instead?** The manual PyInstaller command
 above under "Packaging into a single portable PCBridge.exe" still works

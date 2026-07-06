@@ -44,6 +44,18 @@ from tkinter import filedialog, messagebox
 # against the GitHub release tag to decide if an update is available.
 APP_VERSION = "1.1.0"
 
+# Baked-in update credentials -- generated fresh by the CI build (see
+# .github/workflows/build-release.yml) right before PyInstaller runs, so
+# a release built via GitHub Actions already knows its own repo/token and
+# needs no manual config.json edit to enable auto-update. This file does
+# not exist in the repo itself and isn't created for local/dev runs, so
+# it falls back to empty strings -- use config.json's "update_repo"/
+# "update_token" instead for anything you build yourself.
+try:
+    from update_secrets import UPDATE_REPO, UPDATE_TOKEN
+except ImportError:
+    UPDATE_REPO, UPDATE_TOKEN = "", ""
+
 BASE_DIR = Path(__file__).resolve().parent
 
 # Midnight theme -- matches static/style.css, so the desktop control
@@ -77,10 +89,13 @@ def load_config() -> dict:
         "port": 8000,
         "pin": None,
         # Auto-update settings -- see README-DESKTOP.md. Both must be set
-        # for update checks to run at all; left unset, the feature is a
-        # silent no-op so this doesn't break setups that don't want it.
-        "update_repo": None,   # "yourusername/pcbridge"
-        "update_token": None,  # fine-grained PAT, read-only, this repo only
+        # (baked in by a CI build, or set here) for update checks to run
+        # at all; left unset, the feature is a silent no-op so this
+        # doesn't break setups that don't want it. A value in config.json
+        # always wins over the baked-in one, so you can still point a
+        # given install at a different repo/token if you ever need to.
+        "update_repo": UPDATE_REPO or None,   # "yourusername/pcbridge"
+        "update_token": UPDATE_TOKEN or None,  # fine-grained PAT, read-only, this repo only
         "auto_check_updates": True,
     }
     if CONFIG_PATH.exists():
