@@ -1,0 +1,82 @@
+name: Build and release PCBridge.exe
+
+# Push a version tag (e.g. `git tag v1.2.0 && git push origin v1.2.0`) to
+# trigger this. It builds PCBridge.exe on a real Windows runner and
+# attaches it to a GitHub Release named after the tag -- no local
+# Windows machine or PyInstaller install needed to publish an update.
+# Already-running copies of the app (see pcbridge_app.py's auto-update)
+# pick up the new release on their own.
+#
+# The build also bakes update_repo/update_token into the exe (via a
+# generated update_secrets.py, read by pcbridge_app.py) so a CI-built
+# exe already knows how to check for its own updates -- no manual
+# config.json edit needed. Requires a repository secret named
+# UPDATE_TOKEN (Settings -> Secrets and variables -> Actions -> New
+# repository secret) set to the same fine-grained PAT described in
+# README-DESKTOP.md.
+#
+# Also builds PCBridge-Setup.exe (installer/PCBridge.iss, via Inno
+# Setup) -- a proper per-user installer with a Start Menu/Desktop icon
+# and an uninstaller entry, for anyone who'd rather not manage a
+# portable exe themselves. Both files get attached to the Release: the
+# installer for new installs, and the plain PCBridge.exe for anyone
+# already running who just needs auto-update to fetch a fresh copy
+# (auto-update always looks for an asset literally named
+# "PCBridge.exe" -- don't rename that one).
+
+on:
+  push:
+    tags:
+      - "v*.*.*"
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: windows-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install dependencies
+        run: |
+          pip install -r requirements.txt
+          pip install pyinstaller
+
+      - name: Convert PWA icon to .ico
+        run: python -c "from PIL import Image; Image.open('static/icons/icon-192.png').save('icon.ico')"
+
+      - name: Bake update credentials into the build
+        shell: bash
+        run: |
+          cat > update_secrets.py << EOF
+          UPDATE_REPO = "${{ github.repository }}"
+          UPDATE_TOKEN = "${{ secrets.UPDATE_TOKEN }}"
+          EOF
+
+      - name: Build PCBridge.exe
+        run: python -m PyInstaller --onefile --windowed --name "PCBridge" --icon icon.ico --add-data "static;static" pcbridge_app.py
+
+      - name: Install Inno Setup
+        run: choco install innosetup -y --no-progress
+
+      - name: Get version number from the tag (strip leading 'v')
+        id: version
+        shell: bash
+        run: echo "number=${GITHUB_REF_NAME#v}" >> "$GITHUB_OUTPUT"
+
+      - name: Build PCBridge-Setup.exe
+        run: '& "C:\Program Files (x86)\Inno Setup 6\ISCC.exe" "/DAppVersion=${{ steps.version.outputs.number }}" installer\PCBridge.iss'
+
+      - name: Publish GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            dist/PCBridge.exe
+            installer/installer_output/PCBridge-Setup.exe
+          generate_release_notes: true

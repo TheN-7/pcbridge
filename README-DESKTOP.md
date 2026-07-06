@@ -10,6 +10,32 @@ This replaces having to run `python server.py` yourself every time.
 `server.py` still works exactly as before if you ever want to run it
 directly (e.g. on a different OS, or in a script).
 
+## Installing PC Bridge
+
+Go to your repo's **Releases** page and download `PCBridge-Setup.exe`
+from the latest release, then run it:
+
+- No admin prompt -- it installs just for your Windows account, under
+  `%LOCALAPPDATA%\Programs\PCBridge`.
+- Adds a **Start Menu shortcut** (with the PC Bridge icon) and offers an
+  optional Desktop shortcut checkbox during install.
+- Offers to launch PC Bridge as soon as setup finishes.
+- Shows up in **Settings -> Apps** like a normal program, with a proper
+  uninstaller -- no manually hunting down leftover files.
+
+This is built automatically by the same CI pipeline that builds the
+plain exe (see "Auto-update" below) -- `PCBridge-Setup.exe` and the
+plain `PCBridge.exe` both get attached to every release. Auto-update
+doesn't care which one you used to install: it always finds and swaps
+in a fresh plain `PCBridge.exe` inside wherever the app is currently
+running from, whether that's the installer's folder or a portable copy
+you placed yourself.
+
+**Prefer the old portable style** (just a single `.exe` you put
+wherever you like, no Start Menu entry)? Download `PCBridge.exe`
+directly from the same Release instead of the Setup file -- see
+"Packaging into a single portable PCBridge.exe" below.
+
 ## Running it (no packaging needed)
 
 ```
@@ -81,10 +107,37 @@ before it happens, rather than assuming something's wrong.
 
 The app can check your GitHub repo for a newer release and update itself
 -- no need to manually rebuild/redistribute the exe to every machine you
-run it on. It's off by default until you configure it (nothing happens,
-no errors) because it needs a couple of settings:
+run it on. It's off until `update_repo`/`update_token` are set somehow --
+nothing happens, no errors, if they aren't. There are two ways to set
+them, and you can use either or both:
 
-Add these to `config.json`, next to `pin` and `root_dir`:
+### Option A -- baked in automatically by the CI build (recommended)
+
+If you build via `.github/workflows/build-release.yml` (see "Publishing
+an update" below), the resulting `PCBridge.exe` already knows its own
+repo and token -- nobody running that exe has to touch `config.json` at
+all. This needs one one-time setup step:
+
+1. Create a GitHub **fine-grained personal access token**, scoped to
+   *only* the `pcbridge` repo, with **Contents: Read-only** permission
+   (that's the minimum needed to read releases/download assets from a
+   private repo). Create one at github.com -> Settings -> Developer
+   settings -> Personal access tokens -> Fine-grained tokens.
+2. Add it as a **repository secret** (not in any file you commit):
+   your repo -> **Settings** -> **Secrets and variables** -> **Actions**
+   -> **New repository secret** -> name it `UPDATE_TOKEN`, paste the
+   token as the value.
+
+That's it -- every build the workflow produces from then on has this
+baked in. `update_repo` doesn't need a secret at all; the workflow fills
+it in automatically from the repo it's running in.
+
+### Option B -- set manually in config.json
+
+For anything you build yourself locally (the manual PyInstaller command
+below), or to point a specific install at a different repo/token than
+what's baked in (a value here always overrides the baked-in one). Add
+to `config.json`, next to `pin` and `root_dir`:
 
 ```json
 {
@@ -98,22 +151,20 @@ Add these to `config.json`, next to `pin` and `root_dir`:
 ```
 
 - `update_repo` -- your GitHub repo as `owner/name`.
-- `update_token` -- a GitHub **fine-grained personal access token**,
-  scoped to *only* this one repo, with **Contents: Read-only**
-  permission (that's the minimum needed to read releases and download
-  assets from a private repo). Create one at
-  github.com -> Settings -> Developer settings -> Fine-grained tokens.
+- `update_token` -- the same kind of fine-grained token described above.
 - `auto_check_updates` -- `true` checks once on every launch (in
   addition to the "Check for updates" button/tray item, which always
   works on demand); set `false` to only ever check manually.
 
-**Security note:** this token has to live in plaintext in `config.json`
-so the app can read it, and it travels with every copy of the app you
-hand out. Keep it scoped to just this repo with read-only access, and
-rotate/revoke it (same GitHub settings page) if a machine it's on is
-ever compromised or the copy is shared somewhere you didn't intend. If
-the repo doesn't actually need to be private, making it public removes
-the need for a token entirely -- `update_repo` alone is enough.
+**Security note (applies either way):** the token ends up readable
+inside the exe itself -- baked into the binary if built via CI, or
+readable in plaintext in `config.json` if set manually -- and travels
+with every copy you hand out. Keep it scoped to just this repo with
+read-only access, and rotate/revoke it (same GitHub settings page) if a
+machine or copy it's on is ever compromised or shared somewhere you
+didn't intend. If the repo doesn't actually need to be private, making
+it public removes the need for a token entirely -- `update_repo` alone
+is enough.
 
 ### Publishing an update (automatic -- no manual rebuild)
 
@@ -133,23 +184,29 @@ version is just:
    workflow watches for)
 
 That's it. GitHub Actions checks out the repo, installs dependencies,
-builds `PCBridge.exe` with the exact same command shown above, and
-creates a Release named `v1.2.0` with that exe attached (already
-correctly named `PCBridge.exe`). Every installed copy with
+builds `PCBridge.exe` with the exact same command shown above, then
+builds `PCBridge-Setup.exe` from it (Inno Setup, `installer/PCBridge.iss`
+-- see "Installing PC Bridge" above), and creates a Release named
+`v1.2.0` with *both* attached. Every installed copy with
 `update_repo`/`update_token` set will notice it next launch (or
 whenever someone clicks "Check for updates"), confirm, download, and
-swap itself for the new version -- restarting automatically. You can
-watch it run under your repo's **Actions** tab.
+swap itself for the new version -- restarting automatically. This
+happens the same way regardless of whether you originally installed via
+the Setup exe or a portable copy. You can watch the build run under
+your repo's **Actions** tab.
 
 No new Python dependency was needed for either the client updater or
 this workflow -- the updater only uses the standard library (`urllib`),
 so `requirements.txt` didn't change.
 
-**First-time setup:** just push the repo, including the
-`.github/workflows/build-release.yml` file -- nothing else to enable.
-Since the repo is private, Actions is included in GitHub's free tier up
-to a monthly minutes allowance (this build takes a few minutes and you
-publish rarely, so it comfortably fits).
+**First-time setup:** push the repo including
+`.github/workflows/build-release.yml` and `installer/PCBridge.iss`, and
+add the `UPDATE_TOKEN` repository secret described in "Auto-update" ->
+"Option A" above (that's the only manual step -- without it, the build
+still succeeds but the resulting exe just won't have update-checking
+baked in). Since the repo is private, Actions is included in GitHub's
+free tier up to a monthly minutes allowance (this build takes a few
+minutes and you publish rarely, so it comfortably fits).
 
 **Prefer to build locally instead?** The manual PyInstaller command
 above under "Packaging into a single portable PCBridge.exe" still works
@@ -170,15 +227,29 @@ relaunches it -- then the app quits immediately to let that happen.
 Not set up by default (you asked for manual start). If you change your
 mind later: press `Win+R`, run `shell:startup`, and drop a shortcut to
 `PCBridge.exe` in the folder that opens — Windows will launch it
-automatically every time you log in.
+automatically every time you log in. If you used the installer, the
+easiest way to get that shortcut is to copy the one it already made in
+your Start Menu (right-click it there → Copy, then paste into the
+`shell:startup` folder) rather than hunting down the exe manually.
 
 ## Notes
 
-- `config.json`/`pcbridge.log` live next to the real `PCBridge.exe`
-  file, not in whatever temporary folder Windows extracts a one-file
-  build into — this was specifically handled so your PIN and folder
-  choice survive between runs (see `app_dir()` in both `server.py` and
-  `pcbridge_app.py`).
+- **Installed via the Setup exe → lives under**
+  `%LOCALAPPDATA%\Programs\PCBridge`; **portable copy → lives wherever
+  you put it.** Either way, `config.json`/`pcbridge.log` live right next
+  to that real `PCBridge.exe`, not in any temporary folder Windows
+  extracts a one-file build into — this was specifically handled so
+  your PIN and folder choice survive between runs (see `app_dir()` in
+  both `server.py` and `pcbridge_app.py`). If you ever have two copies
+  running from two different locations, remember each has its own
+  separate `config.json` — see the `dist\config.json` mix-up earlier in
+  this project's history if that ever seems to happen again.
+- The installer deliberately installs **per-user, not system-wide**
+  (`PrivilegesRequired=lowest` in `installer/PCBridge.iss`) — no admin
+  prompt to install, and auto-update keeps working exactly as it does
+  now (swapping the exe in place needs write access to its own folder,
+  which `Program Files` would block without running the app as admin
+  forever).
 - The tray app starts/stops the server as a separate child process
   (rather than running it in the same process), so Stop is always a
   clean kill — no risk of it lingering half-shut-down.
