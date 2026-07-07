@@ -1,0 +1,10 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  Exposes only the app-specific external files directory (where the
+  auto-update APK gets downloaded to) via FileProvider, so the system
+  package installer can read that one file without the app granting
+  broader storage access.
+-->
+<paths xmlns:android="http://schemas.android.com/apk/res/android">
+    <external-files-path name="updates" path="." />
+</paths>

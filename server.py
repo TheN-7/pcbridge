@@ -16,7 +16,7 @@ import shutil
 import socket
 import sys
 import zipfile
-from datetime import datetime
+from datetime import datetime, timedelta
 from io import BytesIO
 from pathlib import Path
 
@@ -42,6 +42,70 @@ def app_dir() -> Path:
     if getattr(sys, "frozen", False):
         return Path(sys.executable).resolve().parent
     return BASE_DIR
+
+
+def ensure_certificate() -> tuple:
+    """Generates a self-signed TLS certificate + private key the first time
+    this runs, and reuses the same one on every later run.
+
+    This is what the "secure connection" between your phone/PC actually is:
+    real HTTPS, but signed by nobody -- a real certificate authority won't
+    issue a certificate for a private LAN IP. Instead, each client app
+    remembers (pins) this exact certificate's fingerprint the first time it
+    connects, the same trust model SSH uses for host keys. If cert.pem/
+    key.pem are ever deleted (so a new certificate gets generated), every
+    app that already trusted the old one will refuse to connect until you
+    re-add this PC there -- that's the point, not a bug: it's the same
+    protection SSH gives you when a host key suddenly changes.
+    """
+    cert_path = app_dir() / "cert.pem"
+    key_path = app_dir() / "key.pem"
+    if cert_path.exists() and key_path.exists():
+        return cert_path, key_path
+
+    try:
+        from cryptography import x509
+        from cryptography.hazmat.primitives import hashes, serialization
+        from cryptography.hazmat.primitives.asymmetric import rsa
+        from cryptography.x509.oid import NameOID
+    except ImportError:
+        raise SystemExit(
+            "Missing dependency: 'cryptography' is required to generate PC "
+            "Bridge's TLS certificate. Run: pip install -r requirements.txt"
+        )
+
+    key = rsa.generate_private_key(public_exponent=65537, key_size=2048)
+    subject = issuer = x509.Name([x509.NameAttribute(NameOID.COMMON_NAME, "PC Bridge")])
+    now = datetime.utcnow()
+    cert = (
+        x509.CertificateBuilder()
+        .subject_name(subject)
+        .issuer_name(issuer)
+        .public_key(key.public_key())
+        .serial_number(x509.random_serial_number())
+        .not_valid_before(now)
+        .not_valid_after(now + timedelta(days=3650))
+        .sign(key, hashes.SHA256())
+    )
+
+    key_path.write_bytes(key.private_bytes(
+        encoding=serialization.Encoding.PEM,
+        format=serialization.PrivateFormat.TraditionalOpenSSL,
+        encryption_algorithm=serialization.NoEncryption(),
+    ))
+    cert_path.write_bytes(cert.public_bytes(serialization.Encoding.PEM))
+    return cert_path, key_path
+
+
+def cert_fingerprint(cert_path: Path) -> str:
+    """SHA-256 fingerprint of the certificate, formatted like AA:BB:CC:...
+    Client apps pin this on first connect; it's also printed in the startup
+    banner so you can double-check it by eye if you want to be extra sure."""
+    from cryptography import x509
+    from cryptography.hazmat.primitives import hashes
+    cert = x509.load_pem_x509_certificate(cert_path.read_bytes())
+    digest = cert.fingerprint(hashes.SHA256())
+    return digest.hex(":").upper()
 
 
 CONFIG_PATH = app_dir() / "config.json"
@@ -76,6 +140,9 @@ PORT = int(CONFIG.get("port", 8000))
 
 if not ROOT_DIR.exists():
     raise SystemExit(f"root_dir does not exist: {ROOT_DIR}")
+
+CERT_PATH, KEY_PATH = ensure_certificate()
+CERT_FINGERPRINT = cert_fingerprint(CERT_PATH)
 
 app = FastAPI(title="PC Bridge")
 
@@ -274,6 +341,15 @@ def ping():
     return {"ok": True, "app": "pcbridge", "hostname": socket.gethostname()}
 
 
+@app.get("/api/cert-fingerprint")
+def cert_fingerprint_endpoint():
+    """Also unauthenticated -- the certificate itself is handed to anyone
+    who connects during the TLS handshake anyway, so its fingerprint isn't
+    a secret. This just lets an app (or you, by eye) double-check it
+    without needing the PIN first."""
+    return {"fingerprint": CERT_FINGERPRINT}
+
+
 @app.get("/api/stats")
 def stats(request: Request):
     check_pin(request)
@@ -342,9 +418,18 @@ def run():
     print(" PC Bridge is starting")
     print(f" Serving folder: {ROOT_DIR}")
     print(f" PIN: {PIN}")
-    print(f" Open on your phone:  http://{ip}:{PORT}")
+    print(f" Open on your phone:  https://{ip}:{PORT}")
+    print(f" Certificate fingerprint: {CERT_FINGERPRINT}")
+    print(" (apps trust this automatically the first time they connect --")
+    print("  this is only here if you want to double-check it by eye)")
     print("=" * 50)
-    uvicorn.run(app, host="0.0.0.0", port=PORT)
+    uvicorn.run(
+        app,
+        host="0.0.0.0",
+        port=PORT,
+        ssl_certfile=str(CERT_PATH),
+        ssl_keyfile=str(KEY_PATH),
+    )
 
 
 if __name__ == "__main__":

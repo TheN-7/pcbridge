@@ -2,6 +2,9 @@ fastapi>=0.110
 uvicorn>=0.29
 python-multipart>=0.0.9
 
+# Generates the self-signed TLS certificate server.py serves HTTPS with.
+cryptography>=42.0
+
 # Desktop tray control app (pcbridge_app.py) -- not needed to just run
 # server.py directly.
 pystray>=0.19

@@ -217,10 +217,27 @@ build.
 
 Windows won't let a running `.exe` overwrite itself, so on confirm the
 app downloads the new exe as `PCBridge_update.exe` next to the current
-one, writes a tiny throwaway `pcbridge_update.bat` that waits for the
-current process to exit, renames the new file over the old one, and
-relaunches it -- then the app quits immediately to let that happen.
-`pcbridge_update.bat` deletes itself once done, so nothing lingers.
+one, then hands off to a throwaway PowerShell script
+(`pcbridge_update.ps1`) that waits for the current process to exit,
+verifies the downloaded file's size matches what GitHub reported (twice
+-- once right after downloading, once again right before launching it),
+retries the move a few times if the file's briefly locked, and only
+then relaunches it. Every step gets logged to `pcbridge_update.log`
+next to `config.json`. Both throwaway files delete themselves once
+done, so nothing lingers on success.
+
+**If an update ever seems to install a broken copy** (a crash dialog
+mentioning something like `pyi_rth_inspect` or a missing
+`base_library.zip` right after an update relaunches): this is almost
+always antivirus interference, not a code bug -- unsigned PyInstaller
+exes that get silently downloaded and launched by another program (as
+opposed to a person double-clicking a download) are exactly the pattern
+heuristic antivirus flags hardest, and some will quarantine or strip
+files out of the freshly-extracted exe right as it starts. Check
+`pcbridge_update.log` first (it'll say if the size check itself caught
+a bad download) and Windows Security -> Protection history for anything
+quarantined around that time; adding an exclusion for the PC Bridge
+install folder avoids this going forward.
 
 ## Auto-start at login
 

@@ -10,7 +10,7 @@
 
     <!--
       "Change PC address" and "reload" used to be a small floating wrench
-      button overlaid on top of the WebView -- it visually collided with
+      button overlaid on top of the WebView - it visually collided with
       the web header's own icons in the same top-right corner. Both actions
       now live inside the web UI's "⋯" menu instead (see WebAppInterface
       .changeServerAddress()/.reloadPage() below), so there's no more

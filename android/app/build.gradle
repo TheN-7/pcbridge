@@ -3,6 +3,18 @@ plugins {
     id 'org.jetbrains.kotlin.android'
 }
 
+// Release signing -- read from android/keystore.properties, which is
+// never committed (see .gitignore). Doesn't exist -> release builds are
+// left unsigned, same as before this was added; use assembleDebug for
+// local testing until you've set this up (see README-ANDROID.md).
+// CI generates this same file from GitHub secrets before building.
+def keystorePropertiesFile = rootProject.file("keystore.properties")
+def keystoreProperties = new Properties()
+def hasKeystore = keystorePropertiesFile.exists()
+if (hasKeystore) {
+    keystoreProperties.load(new FileInputStream(keystorePropertiesFile))
+}
+
 android {
     namespace 'com.pcbridge.app'
     compileSdk 34
@@ -11,15 +23,44 @@ android {
         applicationId "com.pcbridge.app"
         minSdk 29
         targetSdk 34
-        versionCode 1
-        versionName "1.0"
+        // Overridable at build time (CI passes these from the git tag, so
+        // the installed app's version always matches the GitHub release
+        // it came from) -- falls back to these defaults for a normal
+        // local Android Studio build.
+        versionCode project.hasProperty('appVersionCode') ? (project.property('appVersionCode') as Integer) : 1
+        versionName project.hasProperty('appVersionName') ? project.property('appVersionName') : "1.0"
+
+        // Baked-in update credentials, mirroring pcbridge_app.py's
+        // update_secrets.py approach -- only ever set by the CI build
+        // (env vars from a repository secret), empty for local builds,
+        // which makes update-checking a silent no-op until configured.
+        buildConfigField "String", "UPDATE_REPO", "\"${System.getenv('UPDATE_REPO') ?: ''}\""
+        buildConfigField "String", "UPDATE_TOKEN", "\"${System.getenv('UPDATE_TOKEN') ?: ''}\""
+    }
+
+    signingConfigs {
+        release {
+            if (hasKeystore) {
+                storeFile rootProject.file(keystoreProperties['storeFile'])
+                storePassword keystoreProperties['storePassword']
+                keyAlias keystoreProperties['keyAlias']
+                keyPassword keystoreProperties['keyPassword']
+            }
+        }
     }
 
     buildTypes {
         release {
             minifyEnabled false
             proguardFiles getDefaultProguardFile('proguard-android-optimize.txt'), 'proguard-rules.pro'
+            if (hasKeystore) {
+                signingConfig signingConfigs.release
+            }
         }
+    }
+
+    buildFeatures {
+        buildConfig true
     }
 
     compileOptions {
