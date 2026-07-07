@@ -2,7 +2,8 @@
 
 Browse, upload, and download files between your PC and phone over your local
 network (or Tailscale). Your PC runs a small server; your phone connects to
-it with a browser and installs it as an app icon (PWA) — no app store needed.
+it with a browser and installs it as an app icon (PWA) — no app store needed
+— or use the dedicated Android app (see below).
 
 ## 1. Install (on the PC, one time)
 
@@ -25,27 +26,38 @@ The console prints something like:
 PC Bridge is starting
 Serving folder: C:\Users\you
 PIN: 483920
-Open on your phone:  http://192.168.1.42:8000
+Open on your phone:  https://192.168.1.42:8000
+Certificate fingerprint: AA:BB:CC:...
 ```
 
 Leave this window open — the server runs as long as this is running.
 
 **Prefer not to use a terminal?** See `README-DESKTOP.md` for a small
-system tray app (`pcbridge_app.py`) with a Start/Stop button and a
-window for changing the PIN and shared folder — no console window, and
-packages into a single portable `.exe`.
+system tray app (`pcbridge_app.py`) with a Start/Stop button, a window
+for changing the PIN and shared folder, auto-update, and a proper
+installer with a Start Menu icon — no console window needed.
 
 ## 3. Connect from your phone
 
 1. Make sure your phone is on the **same Wi-Fi network** as the PC (or both
    are on the same Tailscale network — see below).
-2. Open the printed `http://<ip>:8000` address in your phone's browser.
+2. Open the printed `https://<ip>:8000` address in your phone's browser.
+   The certificate is self-signed, so your browser will show a warning the
+   first time — that's expected (see "Security notes" below); proceed past it.
 3. Enter the PIN shown in the PC console.
 4. To install it as an app icon:
    - **Android (Chrome):** tap the ⋮ menu → "Add to Home screen" / "Install app".
    - **iPhone (Safari):** tap the Share icon → "Add to Home Screen".
 
 From then on it opens like a normal app, full-screen, with its own icon.
+
+**Prefer a native Android app instead of the browser/PWA?** See the
+separate `pcbridge-android` repo — a fully native Kotlin/Compose app
+talking directly to this server's API (no browser warning to click past,
+since it pins the certificate itself instead), with biometric lock,
+notifications, a home-screen widget, transfer history, and its own
+signed-release CI pipeline. It's kept as its own repo (not a folder in
+this one) so it can have its own build/release cycle.
 
 ## Using it
 
@@ -105,10 +117,22 @@ First run creates a `config.json` next to `server.py`:
 - `pin` — set your own, or delete the field to have a new random one
   generated next run.
 
-Restart the server after editing `config.json`.
+Restart the server after editing `config.json`. (If you're using the
+desktop tray app instead, see `README-DESKTOP.md` — it also has auto-
+update settings that live in this same file.)
 
 ## Security notes
 
+- The server serves HTTPS, not plain HTTP. On first run it generates its own
+  self-signed certificate (`cert.pem`/`key.pem`, next to `config.json` —
+  gitignored, never shared) since a real certificate authority won't issue
+  one for a private LAN IP. Apps trust that certificate the first time they
+  connect to a PC (the console prints its fingerprint if you ever want to
+  double-check by eye) and remember it after that — the same trust model SSH
+  uses for host keys. If a PC's certificate ever changes, apps that already
+  trust it will refuse to connect and show a warning instead of silently
+  reconnecting, since that can also mean something is intercepting the
+  connection.
 - Anyone who has the PIN and can reach the server's IP/port can read, upload
   to, rename, and delete files under `root_dir`. Keep the PIN private and
   pick a restrictive `root_dir` if this matters to you.
@@ -126,7 +150,7 @@ and signed into the same account:
 1. Run `python server.py` as usual.
 2. Find your PC's Tailscale IP (or MagicDNS name) with `tailscale ip` on the
    PC, or check the Tailscale admin console.
-3. On your phone, open `http://<tailscale-ip>:8000` instead of the LAN IP —
+3. On your phone, open `https://<tailscale-ip>:8000` instead of the LAN IP —
    this works even when the phone is off your home Wi-Fi (e.g. on mobile
    data), since Tailscale creates a private network between your devices.
 
@@ -146,3 +170,18 @@ Two ways to do this:
   (note the `w`, so no console window appears) and place it in the same
   Startup folder. This starts the server immediately with no tray
   icon/window at all, and no way to stop it short of Task Manager.
+
+## Project layout
+
+- `server.py` / `static/` — the FastAPI backend and PWA frontend (this
+  is the whole app when run with just `python server.py`).
+- `pcbridge_app.py` — optional desktop tray control app (see
+  `README-DESKTOP.md`): Start/Stop, PIN/folder editing, auto-update, and
+  the source for the packaged `PCBridge.exe`/installer.
+- `installer/PCBridge.iss` — Inno Setup script that builds the
+  installer version of the desktop app.
+- `.github/workflows/build-release.yml` — CI: tag a version to get a
+  built `PCBridge.exe` and `PCBridge-Setup.exe` published automatically.
+- `android/` — present here for reference/history, but meant to be
+  developed as its own separate repo (`pcbridge-android`) going forward
+  — see that repo's own README for the Android app.

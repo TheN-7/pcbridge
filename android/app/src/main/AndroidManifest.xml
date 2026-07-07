@@ -6,6 +6,12 @@
     <uses-permission android:name="android.permission.USE_BIOMETRIC" />
     <!-- Required at runtime on Android 13+ to show the upload-complete notification. -->
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
+    <!-- Lets the app open the system installer on an APK it downloaded
+         itself (auto-update). Android still requires the user to grant
+         "install unknown apps" for this app once, and to tap Install on
+         the system's own confirmation screen every time; this permission
+         only declares the *intent*, it doesn't skip either of those. -->
+    <uses-permission android:name="android.permission.REQUEST_INSTALL_PACKAGES" />
 
     <application
         android:allowBackup="true"
@@ -41,5 +47,19 @@
                 android:name="android.appwidget.provider"
                 android:resource="@xml/pcbridge_widget_info" />
         </receiver>
+
+        <!-- Hands the downloaded update APK a content:// URI so the
+             system installer (a different app) is allowed to read it.
+             Plain file:// URIs across app boundaries are blocked since
+             Android 7. See res/xml/file_paths.xml for what's exposed. -->
+        <provider
+            android:name="androidx.core.content.FileProvider"
+            android:authorities="${applicationId}.fileprovider"
+            android:exported="false"
+            android:grantUriPermissions="true">
+            <meta-data
+                android:name="android.support.FILE_PROVIDER_PATHS"
+                android:resource="@xml/file_paths" />
+        </provider>
     </application>
 </manifest>

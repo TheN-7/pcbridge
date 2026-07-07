@@ -522,7 +522,7 @@ class App:
         self.toggle_btn.config(text="Stop server" if running else "Start server")
         if running:
             self.address_label.config(
-                text=f"http://{lan_ip()}:{self.config.get('port', 8000)}"
+                text=f"https://{lan_ip()}:{self.config.get('port', 8000)}"
             )
         else:
             self.address_label.config(text="Not reachable while stopped")
@@ -549,7 +549,7 @@ class App:
 
     def on_copy_address(self, event=None):
         text = self.address_label.cget("text")
-        if not text.startswith("http://"):
+        if not text.startswith("https://"):
             return
         self.root.clipboard_clear()
         self.root.clipboard_append(text)
