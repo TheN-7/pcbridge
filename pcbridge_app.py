@@ -446,7 +446,7 @@ def connect_and_learn_fingerprint(address: str, pin: str) -> str:
         resp.read()
         if resp.status == 401:
             raise RuntimeError("That PIN was rejected by the phone.")
-        if resp.status != 200:
+            if resp.status != 200:
             raise RuntimeError(f"Phone returned status {resp.status}.")
     finally:
         conn.close()
@@ -526,6 +526,106 @@ def send_file_to_phone(phone: dict, local_path: Path, rel_path: str, on_progress
             raise RuntimeError(f"Phone returned status {resp.status}.")
     finally:
         conn.close()
+
+
+# ---------- browse phone (full file access) ----------
+#
+# Mirrors server.py's /api/list, /api/download, /api/upload -- but talking
+# to the *phone's* small HTTPS server (pcbridge-android's ReceiveServer.kt)
+# instead of a PC's, and rooted at the phone's real filesystem rather than
+# just its Downloads folder. Requires the phone to have granted itself
+# "All files access" (see that repo's DeviceSidebar "Browse this phone"
+# section); every call below surfaces that server's own explanation if it
+# hasn't been granted, rather than a generic connection error.
+
+
+def _phone_error(body: bytes, status: int) -> str:
+    try:
+        message = json.loads(body.decode("utf-8")).get("error", "")
+    except Exception:
+        message = ""
+    return message or f"Phone returned status {status}."
+
+
+def list_phone_dir(phone: dict, path: str = "") -> dict:
+    conn, _fp = _connect_phone(phone["address"], phone.get("cert_fingerprint"), timeout=15)
+    try:
+        query = urllib.parse.urlencode({"pin": phone["pin"], "path": path})
+        conn.request("GET", f"/api/browse/list?{query}")
+        resp = conn.getresponse()
+        body = resp.read()
+        if resp.status != 200:
+            raise RuntimeError(_phone_error(body, resp.status))
+        return json.loads(body.decode("utf-8"))
+    finally:
+        conn.close()
+
+
+def download_file_from_phone(phone: dict, remote_path: str, dest_path: Path, on_progress=None):
+    conn, _fp = _connect_phone(phone["address"], phone.get("cert_fingerprint"), timeout=30)
+    try:
+        query = urllib.parse.urlencode({"pin": phone["pin"], "path": remote_path})
+        conn.request("GET", f"/api/browse/download?{query}")
+        resp = conn.getresponse()
+        if resp.status != 200:
+            raise RuntimeError(_phone_error(resp.read(), resp.status))
+        total = int(resp.getheader("Content-Length") or 0)
+        dest_path.parent.mkdir(parents=True, exist_ok=True)
+        received = 0
+        with open(dest_path, "wb") as f:
+            while True:
+                chunk = resp.read(256 * 1024)
+                if not chunk:
+                    break
+                f.write(chunk)
+                received += len(chunk)
+                if on_progress:
+                    on_progress(received, total)
+    finally:
+        conn.close()
+
+
+def upload_file_to_phone(phone: dict, local_path: Path, remote_dir: str, on_progress=None):
+    conn, _fp = _connect_phone(phone["address"], phone.get("cert_fingerprint"), timeout=30)
+    try:
+        size = local_path.stat().st_size
+        query = urllib.parse.urlencode({
+            "pin": phone["pin"],
+            "path": remote_dir,
+            "filename": local_path.name,
+        })
+        conn.putrequest("POST", f"/api/browse/upload?{query}")
+        conn.putheader("Content-Type", "application/octet-stream")
+        conn.putheader("Content-Length", str(size))
+        conn.endheaders()
+
+        sent = 0
+        with open(local_path, "rb") as f:
+            while True:
+                chunk = f.read(256 * 1024)
+                if not chunk:
+                    break
+                conn.send(chunk)
+                sent += len(chunk)
+                if on_progress:
+                    on_progress(sent, size)
+
+        resp = conn.getresponse()
+        body = resp.read()
+        if resp.status != 200:
+            raise RuntimeError(_phone_error(body, resp.status))
+    finally:
+        conn.close()
+
+
+def _fmt_bytes(n) -> str:
+    units = ["B", "KB", "MB", "GB", "TB"]
+    i = 0
+    val = float(n or 0)
+    while val >= 1024 and i < len(units) - 1:
+        val /= 1024
+        i += 1
+    return f"{val:.1f} {units[i]}" if i > 0 else f"{int(val)} {units[i]}"
 
 
 # ---------- tray icon ----------
@@ -806,7 +906,27 @@ class App:
         dialog.resizable(False, False)
         dialog.transient(self.root)
         dialog.grab_set()
+        # Every dialog used to open pinned at (0, 0) regardless of where the
+        # main window actually was, since Tk defaults a Toplevel's position
+        # to the screen origin rather than the parent's. after_idle defers
+        # this until the caller has finished packing its widgets (so
+        # winfo_width/height below reflect the dialog's real, final size
+        # instead of Tk's placeholder 1x1 before anything's laid out).
+        dialog.after_idle(lambda: self._center_over_parent(dialog, self.root))
         return dialog
+
+    def _center_over_parent(self, win: tk.Toplevel, parent: tk.Tk) -> None:
+        win.update_idletasks()
+        parent.update_idletasks()
+        w = win.winfo_width()
+        h = win.winfo_height()
+        px = parent.winfo_rootx()
+        py = parent.winfo_rooty()
+        pw = parent.winfo_width()
+        ph = parent.winfo_height()
+        x = max(px + (pw - w) // 2, 0)
+        y = max(py + (ph - h) // 2, 0)
+        win.geometry(f"+{x}+{y}")
 
     def _show_phone_picker(self, phones: list):
         dialog = self._dialog("Send to Phone")
@@ -976,7 +1096,223 @@ class App:
             dialog, text="Choose a folder...", command=pick_folder,
             bg=BORDER, fg=TEXT, activebackground=BORDER, activeforeground=TEXT,
             relief="flat", font=("Segoe UI", 10), padx=10, pady=8,
+        ).pack(fill="x", padx=16, pady=(0, 8))
+
+        def browse():
+            dialog.destroy()
+            self._show_phone_browser(phone)
+
+        tk.Button(
+            dialog, text="Browse phone...", command=browse,
+            bg=BORDER, fg=TEXT, activebackground=BORDER, activeforeground=TEXT,
+            relief="flat", font=("Segoe UI", 10), padx=10, pady=8,
         ).pack(fill="x", padx=16, pady=(0, 16))
+
+    # ---- browse phone ----
+
+    def _show_phone_browser(self, phone: dict):
+        """A two-way file browser for one phone's full filesystem -- needs
+        that phone to have granted itself "All files access" (see
+        pcbridge-android's DeviceSidebar); if it hasn't, every action below
+        just surfaces that server's own explanation instead of failing
+        mysteriously."""
+        dialog = self._dialog(f"Browse {phone['name']}")
+        dialog.resizable(True, True)
+        dialog.geometry("480x420")
+
+        # state["path"]/["parent"]/["entries"] instead of plain locals --
+        # every nested callback below (refresh/navigate/download/upload)
+        # only ever mutates dict contents, never rebinds the name, so none
+        # of them need `nonlocal` to see each other's updates.
+        state = {"path": "", "parent": None, "entries": []}
+
+        path_label = tk.Label(
+            dialog, text="/", bg=BG, fg=MUTED, font=("Segoe UI", 9), anchor="w"
+        )
+        path_label.pack(fill="x", padx=16, pady=(12, 4))
+
+        list_frame = tk.Frame(dialog, bg=BG)
+        list_frame.pack(fill="both", expand=True, padx=16, pady=(0, 8))
+
+        scrollbar = tk.Scrollbar(list_frame)
+        scrollbar.pack(side="right", fill="y")
+        listbox = tk.Listbox(
+            list_frame, bg=CARD, fg=TEXT, selectbackground=BLUE, selectforeground=ON_BLUE,
+            font=("Segoe UI", 10), relief="flat", highlightthickness=0,
+            yscrollcommand=scrollbar.set, selectmode="extended", activestyle="none",
+        )
+        listbox.pack(side="left", fill="both", expand=True)
+        scrollbar.config(command=listbox.yview)
+
+        status_label = tk.Label(
+            dialog, text="Loading...", bg=BG, fg=MUTED, font=("Segoe UI", 9),
+            wraplength=440, justify="left",
+        )
+        status_label.pack(anchor="w", padx=16, pady=(0, 4))
+
+        def entry_at(index):
+            """Maps a Listbox row index back to either "__parent__" (the
+            ".." row, only present when not at the phone's storage root) or
+            the matching entry dict from the last /api/browse/list result."""
+            has_parent = state["parent"] is not None
+            if has_parent:
+                if index == 0:
+                    return "__parent__"
+                index -= 1
+            entries = state["entries"]
+            return entries[index] if 0 <= index < len(entries) else None
+
+        def refresh():
+            status_label.config(text="Loading...", fg=MUTED)
+
+            def worker():
+                try:
+                    result = list_phone_dir(phone, state["path"])
+                except Exception as e:
+                    self.root.after(0, lambda: status_label.config(text=str(e), fg=RED))
+                    return
+
+                def apply():
+                    state["path"] = result.get("path", "")
+                    state["parent"] = result.get("parent")
+                    state["entries"] = result.get("entries", [])
+                    path_label.config(text="/" + state["path"])
+                    listbox.delete(0, "end")
+                    if state["parent"] is not None:
+                        listbox.insert("end", "..")
+                    for entry in state["entries"]:
+                        if entry["is_dir"]:
+                            listbox.insert("end", f"[DIR]  {entry['name']}")
+                        else:
+                            listbox.insert("end", f"{entry['name']}  ({_fmt_bytes(entry.get('size') or 0)})")
+                    for i in range(listbox.size()):
+                        target = entry_at(i)
+                        if target == "__parent__" or (isinstance(target, dict) and target["is_dir"]):
+                            listbox.itemconfig(i, {"fg": BLUE})
+                    status_label.config(text=f"{len(state['entries'])} item(s).", fg=MUTED)
+
+                self.root.after(0, apply)
+
+            threading.Thread(target=worker, daemon=True).start()
+
+        def on_double_click(_event=None):
+            sel = listbox.curselection()
+            if not sel:
+                return
+            target = entry_at(sel[0])
+            if target == "__parent__":
+                state["path"] = state["parent"] or ""
+                refresh()
+            elif isinstance(target, dict) and target["is_dir"]:
+                state["path"] = f"{state['path']}/{target['name']}" if state["path"] else target["name"]
+                refresh()
+
+        listbox.bind("<Double-Button-1>", on_double_click)
+
+        def selected_files():
+            files = []
+            for index in listbox.curselection():
+                target = entry_at(index)
+                if isinstance(target, dict) and not target["is_dir"]:
+                    files.append(target)
+            return files
+
+        def do_download():
+            files = selected_files()
+            if not files:
+                status_label.config(text="Select one or more files (not folders) to download.", fg=RED)
+                return
+            dest_dir = filedialog.askdirectory(title="Save downloaded file(s) to...")
+            if not dest_dir:
+                return
+            status_label.config(text=f"Downloading {len(files)} file(s)...", fg=MUTED)
+
+            def worker():
+                failed = []
+                for entry in files:
+                    remote_path = f"{state['path']}/{entry['name']}" if state["path"] else entry["name"]
+                    try:
+                        download_file_from_phone(phone, remote_path, Path(dest_dir) / entry["name"])
+                    except Exception as e:
+                        failed.append((entry["name"], str(e)))
+
+                def finish():
+                    if failed:
+                        lines = "\n".join(f"- {n}: {err}" for n, err in failed[:5])
+                        status_label.config(text=f"Some downloads failed:\n{lines}", fg=RED)
+                    else:
+                        status_label.config(text=f"Downloaded {len(files)} file(s) to {dest_dir}.", fg=GREEN)
+
+                self.root.after(0, finish)
+
+            threading.Thread(target=worker, daemon=True).start()
+
+        def upload_paths(paths):
+            targets = collect_send_targets(paths)
+            if not targets:
+                status_label.config(text="Nothing to upload.", fg=RED)
+                return
+            status_label.config(text=f"Uploading {len(targets)} file(s)...", fg=MUTED)
+
+            def worker():
+                failed = []
+                sent = 0
+                for local_path, rel_path in targets:
+                    subdir = rel_path.rsplit("/", 1)[0] if "/" in rel_path else ""
+                    remote_dir = f"{state['path']}/{subdir}" if state["path"] and subdir else (subdir or state["path"])
+                    try:
+                        upload_file_to_phone(phone, local_path, remote_dir)
+                        sent += 1
+                    except Exception as e:
+                        failed.append((rel_path, str(e)))
+
+                def finish():
+                    if failed:
+                        lines = "\n".join(f"- {n}: {err}" for n, err in failed[:5])
+                        status_label.config(text=f"Sent {sent}/{len(targets)}. Some failed:\n{lines}", fg=RED)
+                    else:
+                        status_label.config(text=f"Uploaded {sent} file(s) to /{state['path']}.", fg=GREEN)
+                    refresh()
+
+                self.root.after(0, finish)
+
+            threading.Thread(target=worker, daemon=True).start()
+
+        def do_upload_files():
+            chosen = filedialog.askopenfilenames(title="Choose files to upload")
+            if chosen:
+                upload_paths(list(chosen))
+
+        def do_upload_folder():
+            chosen = filedialog.askdirectory(title="Choose a folder to upload")
+            if chosen:
+                upload_paths([chosen])
+
+        btn_row = tk.Frame(dialog, bg=BG)
+        btn_row.pack(fill="x", padx=16, pady=(0, 16))
+
+        tk.Button(
+            btn_row, text="Download selected", command=do_download,
+            bg=BLUE, fg=ON_BLUE, activebackground=BLUE, activeforeground=ON_BLUE,
+            relief="flat", font=("Segoe UI", 9, "bold"), padx=8, pady=6,
+        ).pack(side="left")
+        tk.Button(
+            btn_row, text="Upload files...", command=do_upload_files,
+            bg=BORDER, fg=TEXT, activebackground=BORDER, activeforeground=TEXT,
+            relief="flat", font=("Segoe UI", 9), padx=8, pady=6,
+        ).pack(side="left", padx=(6, 0))
+        tk.Button(
+            btn_row, text="Upload folder...", command=do_upload_folder,
+            bg=BORDER, fg=TEXT, activebackground=BORDER, activeforeground=TEXT,
+            relief="flat", font=("Segoe UI", 9), padx=8, pady=6,
+        ).pack(side="left", padx=(6, 0))
+        tk.Button(
+            btn_row, text="Close", command=dialog.destroy,
+            bg=BG, fg=MUTED, activebackground=BG, activeforeground=MUTED,
+            relief="flat", font=("Segoe UI", 9),
+        ).pack(side="right")
+
+        refresh()
 
     def _send_paths_to_phone(self, phone: dict, paths: list):
         targets = collect_send_targets(paths)

@@ -294,6 +294,26 @@ fingerprint the first time it connects, and refuses to send (with a
 warning you have to explicitly dismiss) if that fingerprint ever changes
 without you expecting it.
 
+### Browse phone
+
+Beyond one-shot "push these files" sends, **Browse phone...** (the third
+button after **Choose files...**/**Choose a folder...**) opens a two-way
+file browser over the phone's *entire* filesystem -- navigate into any
+folder (double-click to open, ".." to go up), download one or more
+selected files to a folder you pick, or upload files/a whole folder
+straight into whatever folder you're currently looking at.
+
+This needs the phone to have granted itself **All files access** first
+(the sidebar's "Browse this phone" section, under "Receive from PC") --
+without it, every action in this dialog shows the phone's own explanation
+instead of a generic connection error. This is a heavier, more
+sensitive permission than anything else in the app (`MANAGE_EXTERNAL_STORAGE`,
+not a browser-picker toggle), which is why it needs a deliberate opt-in
+from a dedicated Android Settings screen rather than a plain switch --
+same PIN-checked, certificate-pinned connection as the rest of "Send to
+Phone" underneath it, just reaching further than the phone's Downloads
+folder.
+
 ## Auto-start at login
 
 Not set up by default (you asked for manual start). If you change your
