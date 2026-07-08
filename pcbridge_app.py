@@ -454,8 +454,18 @@ def connect_and_learn_fingerprint(address: str, pin: str) -> str:
 
 
 def ping_phone(phone: dict) -> bool:
+    """Used only for the Send to Phone list's online/offline dot -- a
+    generous timeout on purpose. A phone address in the 100.64.0.0/10
+    range is a Tailscale IP, which sometimes relays through a DERP server
+    instead of a direct connection and can add real latency; the previous
+    5s timeout was tight enough to flag a genuinely-online phone as
+    offline fairly often. This is separate from Android's own Doze/App
+    Standby battery restrictions, which can also delay or drop an
+    incoming connection to a backgrounded phone with the screen off for a
+    while -- no timeout on this side fixes that, it's a phone-side
+    background-execution limit, not a network one."""
     try:
-        conn, _fp = _connect_phone(phone["address"], phone.get("cert_fingerprint"), timeout=5)
+        conn, _fp = _connect_phone(phone["address"], phone.get("cert_fingerprint"), timeout=8)
     except Exception:
         return False
     try:
@@ -945,6 +955,18 @@ class App:
         # offline-dot idea the phone app already uses for its PC list.
         status_dots = {}
 
+        def remove_phone(p):
+            if not messagebox.askyesno(
+                "PC Bridge",
+                f"Remove \"{p['name']}\"? You'll need to add it again (address, "
+                "PIN, and re-verify its certificate) to send to it later.",
+            ):
+                return
+            remaining = [ph for ph in load_phones() if ph["id"] != p["id"]]
+            save_phones(remaining)
+            dialog.destroy()
+            self._show_phone_picker(remaining)
+
         for phone in phones:
             row = tk.Frame(dialog, bg=CARD, highlightbackground=BORDER, highlightthickness=1)
             row.pack(fill="x", padx=16, pady=(0, 6))
@@ -956,8 +978,14 @@ class App:
                 relief="flat", font=("Segoe UI", 10), padx=10, pady=8,
             ).pack(side="left", fill="x", expand=True)
 
+            tk.Button(
+                row, text="✕", command=lambda p=phone: remove_phone(p),
+                bg=CARD, fg=MUTED, activebackground=BORDER, activeforeground=RED,
+                relief="flat", font=("Segoe UI", 10), padx=8, pady=8, bd=0,
+            ).pack(side="right")
+
             dot = tk.Label(row, text="●", bg=CARD, fg=MUTED, font=("Segoe UI", 10))
-            dot.pack(side="right", padx=(0, 12))
+            dot.pack(side="right", padx=(0, 4))
             status_dots[phone["id"]] = dot
 
         tk.Button(
