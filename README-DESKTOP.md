@@ -255,7 +255,19 @@ to pick something on the PC than to go find it in the phone's file
 browser. Needs the phone's "Receive from PC" toggle turned on first (see
 its sidebar), which shows the address/PIN/fingerprint to add here.
 
-**Adding a phone the first time:**
+**Adding a phone automatically (recommended):**
+
+Since a recent version, the pairing happens in one direction only. On the
+phone, add this PC the normal way (see the Android app's Add PC flow) with
+**Allow receiving files** already turned on -- the phone then registers
+itself with this PC automatically, and it just shows up next time you
+open **Send to Phone...**, no separate "Add Phone" step needed here. If
+**Allow receiving files** was turned on *after* the PC was already added,
+turning the toggle on retroactively registers with every PC already known
+to that phone.
+
+**Adding a phone manually (older phone app versions, or if the automatic
+step above didn't happen):**
 
 1. On the phone, open the sidebar and turn on **Allow receiving files**.
    It'll show an address (like `192.168.1.42:8000`), a PIN, and a
@@ -265,8 +277,8 @@ its sidebar), which shows the address/PIN/fingerprint to add here.
    -> **Connect**.
 3. Once connected, pick **Choose files...** or **Choose a folder...**.
 
-The PC remembers the phone (in `phones.json`, gitignored like
-`config.json`) so you only add it once. A whole folder keeps its
+Either way, the PC remembers the phone (in `phones.json`, gitignored like
+`config.json`) so it only needs to happen once. A whole folder keeps its
 structure -- everything lands on the phone under **Downloads/Received
 from PC/**.
 

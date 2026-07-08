@@ -109,6 +109,24 @@ def cert_fingerprint(cert_path: Path) -> str:
 
 
 CONFIG_PATH = app_dir() / "config.json"
+PHONES_PATH = app_dir() / "phones.json"
+
+
+def load_phones() -> list:
+    """Known phones this PC can push files to (see /api/register-phone and
+    pcbridge_app.py's "Send to Phone" feature, which reads this same file).
+    Mirrors pcbridge_app.py's load_phones() exactly -- both processes share
+    one phones.json next to this PC's config/cert files."""
+    if PHONES_PATH.exists():
+        try:
+            return json.loads(PHONES_PATH.read_text())
+        except Exception:
+            pass
+    return []
+
+
+def save_phones(phones: list):
+    PHONES_PATH.write_text(json.dumps(phones, indent=2))
 
 
 def load_config():
@@ -348,6 +366,46 @@ def cert_fingerprint_endpoint():
     a secret. This just lets an app (or you, by eye) double-check it
     without needing the PIN first."""
     return {"fingerprint": CERT_FINGERPRINT}
+
+
+@app.post("/api/register-phone")
+async def register_phone(
+    request: Request,
+    name: str = Form(...),
+    address: str = Form(...),
+    phone_pin: str = Form(...),
+    cert_fingerprint: str = Form(...),
+):
+    """Lets a phone register itself as a "send to" target the moment it
+    successfully adds this PC (see the Android app's Add PC flow, and its
+    "Allow receiving files" toggle) -- so you don't have to separately run
+    "Add Phone" on this PC too. Authenticated with this PC's own PIN (the
+    same one the phone just used for /api/whoami) -- phone_pin here is a
+    *different* PIN, the phone's own receive-server one, which this PC
+    will present back to the phone later when actually sending a file.
+
+    Writes to the same phones.json the desktop tray app's "Send to Phone"
+    feature already reads fresh every time that dialog opens, so a newly
+    registered phone shows up there immediately with no extra plumbing."""
+    check_pin(request)
+    phones = load_phones()
+    existing_index = next(
+        (i for i, p in enumerate(phones) if p.get("address", "").lower() == address.lower()),
+        None,
+    )
+    entry = {
+        "id": phones[existing_index]["id"] if existing_index is not None else secrets.token_hex(8),
+        "name": name,
+        "address": address,
+        "pin": phone_pin,
+        "cert_fingerprint": cert_fingerprint,
+    }
+    if existing_index is not None:
+        phones[existing_index] = entry
+    else:
+        phones.append(entry)
+    save_phones(phones)
+    return {"ok": True}
 
 
 @app.get("/api/stats")
