@@ -42,7 +42,7 @@ from tkinter import filedialog, messagebox
 
 # Bump this with every release you publish -- it's what gets compared
 # against the GitHub release tag to decide if an update is available.
-APP_VERSION = "1.3.1"
+APP_VERSION = "1.3.2"
 
 # Baked-in update credentials -- generated fresh by the CI build (see
 # .github/workflows/build-release.yml) right before PyInstaller runs, so
