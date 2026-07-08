@@ -282,6 +282,12 @@ Either way, the PC remembers the phone (in `phones.json`, gitignored like
 structure -- everything lands on the phone under **Downloads/Received
 from PC/**.
 
+**Online status:** opening **Send to Phone...** pings every remembered
+phone in the background and colors a dot next to its name green
+(reachable right now) or red (not reachable -- asleep, off Wi-Fi, or the
+receiving toggle is off). The list itself never waits on this: it appears
+instantly and each dot fills in as its own ping resolves.
+
 **Security:** the same trust-on-first-use model as the phone's own
 Add PC flow, just in reverse -- the PC pins the phone's certificate
 fingerprint the first time it connects, and refuses to send (with a

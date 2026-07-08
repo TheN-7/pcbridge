@@ -820,13 +820,25 @@ class App:
                 dialog, text="No phones added yet.", bg=BG, fg=MUTED, font=("Segoe UI", 9)
             ).pack(anchor="w", padx=16, pady=(0, 8))
 
+        # id -> status dot Label, so the background ping below can color
+        # each one in place once it knows the answer, the same online/
+        # offline-dot idea the phone app already uses for its PC list.
+        status_dots = {}
+
         for phone in phones:
+            row = tk.Frame(dialog, bg=CARD, highlightbackground=BORDER, highlightthickness=1)
+            row.pack(fill="x", padx=16, pady=(0, 6))
+
             tk.Button(
-                dialog, text=phone["name"], anchor="w",
+                row, text=phone["name"], anchor="w",
                 command=lambda p=phone: (dialog.destroy(), self._choose_send_kind(p)),
                 bg=CARD, fg=TEXT, activebackground=BORDER, activeforeground=TEXT,
                 relief="flat", font=("Segoe UI", 10), padx=10, pady=8,
-            ).pack(fill="x", padx=16, pady=(0, 6))
+            ).pack(side="left", fill="x", expand=True)
+
+            dot = tk.Label(row, text="●", bg=CARD, fg=MUTED, font=("Segoe UI", 10))
+            dot.pack(side="right", padx=(0, 12))
+            status_dots[phone["id"]] = dot
 
         tk.Button(
             dialog, text="+ Add new phone", anchor="w",
@@ -840,6 +852,24 @@ class App:
             bg=BG, fg=MUTED, activebackground=BG, activeforeground=MUTED,
             relief="flat", font=("Segoe UI", 9),
         ).pack(anchor="e", padx=16, pady=(4, 16))
+
+        # Ping every known phone on a background thread so the dialog opens
+        # instantly -- an asleep or off-network phone would otherwise make
+        # the whole list wait on its own connect timeout before anything
+        # shows up. Each dot starts muted ("checking") and flips to
+        # green/red as its own ping resolves independently.
+        def ping_worker():
+            for phone in phones:
+                online = ping_phone(phone)
+
+                def update(p=phone, ok=online):
+                    dot = status_dots.get(p["id"])
+                    if dot is not None and dot.winfo_exists():
+                        dot.config(fg=GREEN if ok else RED)
+
+                self.root.after(0, update)
+
+        threading.Thread(target=ping_worker, daemon=True).start()
 
     def _show_add_phone_dialog(self):
         dialog = self._dialog("Add Phone")
