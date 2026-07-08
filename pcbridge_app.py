@@ -908,9 +908,17 @@ class App:
                 try:
                     fingerprint = connect_and_learn_fingerprint(address, pin)
                 except Exception as e:
+                    # str(e) can come back empty for some bare timeout/
+                    # connection exceptions (e.g. a message-less
+                    # socket.timeout from a hung TLS handshake) -- that
+                    # made a real failure look like "nothing happened,
+                    # button just reset," with no way to tell what went
+                    # wrong. Always show at least the exception's type so
+                    # there's never a silent blank failure here.
+                    message = str(e) or f"{type(e).__name__} (no further details)"
                     self.root.after(0, lambda: (
                         connect_btn.config(state="normal", text="Connect"),
-                        status_label.config(text=str(e)),
+                        status_label.config(text=message),
                     ))
                     return
 
