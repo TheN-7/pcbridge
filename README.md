@@ -34,8 +34,10 @@ Leave this window open — the server runs as long as this is running.
 
 **Prefer not to use a terminal?** See `README-DESKTOP.md` for a small
 system tray app (`pcbridge_app.py`) with a Start/Stop button, a window
-for changing the PIN and shared folder, auto-update, and a proper
-installer with a Start Menu icon — no console window needed.
+for changing the PIN and shared folder, auto-update, a **Send to
+Phone** feature for pushing files or a folder straight onto your
+phone's storage, and a proper installer with a Start Menu icon — no
+console window needed.
 
 ## 3. Connect from your phone
 

@@ -173,19 +173,27 @@ Windows machine in GitHub's cloud and publishes it as a Release for you
 -- you never have to run PyInstaller by hand again. Publishing a new
 version is just:
 
-1. Bump `APP_VERSION` near the top of `pcbridge_app.py`.
-2. Commit and push that change.
-3. Tag it and push the tag:
-   ```
-   git tag v1.2.0
-   git push origin v1.2.0
-   ```
-   (the tag must match `v` + digits, e.g. `v1.2.0` -- that's what the
-   workflow watches for)
+```
+git tag v1.2.0
+git push origin v1.2.0
+```
 
-That's it. GitHub Actions checks out the repo, installs dependencies,
-builds `PCBridge.exe` with the exact same command shown above, then
-builds `PCBridge-Setup.exe` from it (Inno Setup, `installer/PCBridge.iss`
+(the tag must match `v` + digits, e.g. `v1.2.0` -- that's what the
+workflow watches for)
+
+That's it -- there's no separate "bump the version" step to remember.
+`APP_VERSION` used to be a literal near the top of `pcbridge_app.py` you
+had to manually edit before every release; that was silently skipped for
+one real release, which caused the exe to keep reporting its old
+version forever and auto-update to loop endlessly redownloading "the
+latest" build. The workflow now generates `app_version.py` from the tag
+itself right before PyInstaller runs (the same way it already baked in
+`update_secrets.py`), so the version the exe reports always matches the
+tag it was actually built from.
+
+GitHub Actions checks out the repo, installs dependencies, builds
+`PCBridge.exe` with the exact same command shown above, then builds
+`PCBridge-Setup.exe` from it (Inno Setup, `installer/PCBridge.iss`
 -- see "Installing PC Bridge" above), and creates a Release named
 `v1.2.0` with *both* attached. Every installed copy with
 `update_repo`/`update_token` set will notice it next launch (or
@@ -238,6 +246,35 @@ files out of the freshly-extracted exe right as it starts. Check
 a bad download) and Windows Security -> Protection history for anything
 quarantined around that time; adding an exclusion for the PC Bridge
 install folder avoids this going forward.
+
+## Send to Phone
+
+Besides browsing/downloading from your phone, the PC can push files or a
+whole folder straight onto a phone's storage -- useful when it's easier
+to pick something on the PC than to go find it in the phone's file
+browser. Needs the phone's "Receive from PC" toggle turned on first (see
+its sidebar), which shows the address/PIN/fingerprint to add here.
+
+**Adding a phone the first time:**
+
+1. On the phone, open the sidebar and turn on **Allow receiving files**.
+   It'll show an address (like `192.168.1.42:8000`), a PIN, and a
+   certificate fingerprint.
+2. On the PC, click **Send to Phone...** (in the window or the tray
+   menu) -> **+ Add new phone** -> type a name, the address, and the PIN
+   -> **Connect**.
+3. Once connected, pick **Choose files...** or **Choose a folder...**.
+
+The PC remembers the phone (in `phones.json`, gitignored like
+`config.json`) so you only add it once. A whole folder keeps its
+structure -- everything lands on the phone under **Downloads/Received
+from PC/**.
+
+**Security:** the same trust-on-first-use model as the phone's own
+Add PC flow, just in reverse -- the PC pins the phone's certificate
+fingerprint the first time it connects, and refuses to send (with a
+warning you have to explicitly dismiss) if that fingerprint ever changes
+without you expecting it.
 
 ## Auto-start at login
 

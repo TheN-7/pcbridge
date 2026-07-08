@@ -51,6 +51,11 @@ jobs:
       - name: Convert PWA icon to .ico
         run: python -c "from PIL import Image; Image.open('static/icons/icon-192.png').save('icon.ico')"
 
+      - name: Get version number from the tag (strip leading 'v')
+        id: version
+        shell: bash
+        run: echo "number=${GITHUB_REF_NAME#v}" >> "$GITHUB_OUTPUT"
+
       - name: Bake update credentials into the build
         shell: bash
         run: |
@@ -59,16 +64,18 @@ jobs:
           UPDATE_TOKEN = "${{ secrets.UPDATE_TOKEN }}"
           EOF
 
+      - name: Bake version into the build
+        shell: bash
+        run: |
+          cat > app_version.py << EOF
+          APP_VERSION = "${{ steps.version.outputs.number }}"
+          EOF
+
       - name: Build PCBridge.exe
         run: python -m PyInstaller --onefile --windowed --name "PCBridge" --icon icon.ico --add-data "static;static" pcbridge_app.py
 
       - name: Install Inno Setup
         run: choco install innosetup -y --no-progress
-
-      - name: Get version number from the tag (strip leading 'v')
-        id: version
-        shell: bash
-        run: echo "number=${GITHUB_REF_NAME#v}" >> "$GITHUB_OUTPUT"
 
       - name: Build PCBridge-Setup.exe
         run: '& "C:\Program Files (x86)\Inno Setup 6\ISCC.exe" "/DAppVersion=${{ steps.version.outputs.number }}" installer\PCBridge.iss'

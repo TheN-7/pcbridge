@@ -26,23 +26,36 @@ see the "auto-update" section below and README-DESKTOP.md for how to
 configure and publish releases.
 """
 
+import hashlib
+import http.client
 import json
 import os
 import secrets
 import shutil
 import socket
+import ssl
 import subprocess
 import sys
 import threading
 import tkinter as tk
 import urllib.error
+import urllib.parse
 import urllib.request
 from pathlib import Path
-from tkinter import filedialog, messagebox
+from tkinter import filedialog, messagebox, ttk
 
-# Bump this with every release you publish -- it's what gets compared
-# against the GitHub release tag to decide if an update is available.
-APP_VERSION = "1.3.2"
+# This dev-mode default is only used for local/unpackaged runs. Real
+# releases get their version baked in automatically at build time (see
+# .github/workflows/build-release.yml's "Bake version into the build"
+# step, which generates app_version.py from the git tag before PyInstaller
+# runs) -- this used to be a manually-bumped literal, which silently never
+# got bumped for a real release, causing the app to keep reporting its old
+# version and auto-update to loop forever redownloading "the latest" build.
+APP_VERSION = "1.4.0"
+try:
+    from app_version import APP_VERSION  # noqa: F811 -- overrides dev default when baked in
+except ImportError:
+    pass
 
 # Baked-in update credentials -- generated fresh by the CI build (see
 # .github/workflows/build-release.yml) right before PyInstaller runs, so
@@ -341,6 +354,180 @@ Remove-Item -Path $MyInvocation.MyCommand.Path -Force -ErrorAction SilentlyConti
     return ps1_path
 
 
+# ---------- send to phone ----------
+#
+# The PC can push files/folders straight onto a phone's storage -- the
+# mirror image of the phone pulling files by browsing: the phone runs a
+# small HTTPS server of its own (see pcbridge-android's ReceiveServer.kt)
+# and the PC connects out to it as a client, pinning its self-signed
+# certificate's fingerprint the same trust-on-first-use way the phone app
+# already pins this PC's certificate (see README-DESKTOP.md).
+#
+# Known phones live in phones.json (gitignored, like config.json -- it
+# holds real PINs and fingerprints): a list of {"id", "name",
+# "address" ("host:port"), "pin", "cert_fingerprint"}.
+
+PHONES_PATH = app_dir() / "phones.json"
+
+
+def load_phones() -> list:
+    if PHONES_PATH.exists():
+        try:
+            return json.loads(PHONES_PATH.read_text())
+        except Exception:
+            pass
+    return []
+
+
+def save_phones(phones: list):
+    PHONES_PATH.write_text(json.dumps(phones, indent=2))
+
+
+class PhoneCertMismatch(Exception):
+    """Raised when a phone presents a different certificate than the one
+    pinned for it. Could mean the app was reinstalled -- or that something
+    is intercepting the connection. Never silently trusted; the caller
+    always has to explicitly decide to re-pin (see _send_paths_to_phone)."""
+
+    def __init__(self, expected: str, actual: str):
+        self.expected = expected
+        self.actual = actual
+        super().__init__(f"Certificate fingerprint mismatch: expected {expected}, got {actual}")
+
+
+def _parse_address(address: str) -> tuple:
+    if ":" in address:
+        host, port = address.rsplit(":", 1)
+        return host, int(port)
+    return address, 8000
+
+
+def _insecure_ssl_context() -> ssl.SSLContext:
+    """No CA can vouch for a phone's self-signed certificate, so standard
+    chain validation is off here -- the actual security comes from every
+    caller below checking the real fingerprint by hand right after
+    connecting (see _connect_phone), the same TOFU model SSH uses for
+    host keys, not from this context on its own."""
+    ctx = ssl.SSLContext(ssl.PROTOCOL_TLS_CLIENT)
+    ctx.check_hostname = False
+    ctx.verify_mode = ssl.CERT_NONE
+    return ctx
+
+
+def _peer_fingerprint(conn: "http.client.HTTPSConnection") -> str:
+    der = conn.sock.getpeercert(binary_form=True)
+    return hashlib.sha256(der).digest().hex(":").upper()
+
+
+def _connect_phone(address: str, expected_fingerprint: str = None, timeout: int = 10):
+    """Opens a connection and returns (conn, fingerprint). Raises
+    PhoneCertMismatch if expected_fingerprint is given and doesn't match --
+    the caller decides whether to abort or ask the user to trust the new
+    one."""
+    host, port = _parse_address(address)
+    conn = http.client.HTTPSConnection(host, port, context=_insecure_ssl_context(), timeout=timeout)
+    conn.connect()
+    fingerprint = _peer_fingerprint(conn)
+    if expected_fingerprint and fingerprint.upper() != expected_fingerprint.upper():
+        conn.close()
+        raise PhoneCertMismatch(expected_fingerprint, fingerprint)
+    return conn, fingerprint
+
+
+def connect_and_learn_fingerprint(address: str, pin: str) -> str:
+    """Used by Add Phone: connects without an expected fingerprint (there's
+    nothing pinned yet), verifies the PIN is right, and returns the
+    fingerprint to pin from now on."""
+    conn, fingerprint = _connect_phone(address)
+    try:
+        query = urllib.parse.urlencode({"pin": pin})
+        conn.request("GET", f"/api/ping?{query}")
+        resp = conn.getresponse()
+        resp.read()
+        if resp.status == 401:
+            raise RuntimeError("That PIN was rejected by the phone.")
+        if resp.status != 200:
+            raise RuntimeError(f"Phone returned status {resp.status}.")
+    finally:
+        conn.close()
+    return fingerprint
+
+
+def ping_phone(phone: dict) -> bool:
+    try:
+        conn, _fp = _connect_phone(phone["address"], phone.get("cert_fingerprint"), timeout=5)
+    except Exception:
+        return False
+    try:
+        query = urllib.parse.urlencode({"pin": phone["pin"]})
+        conn.request("GET", f"/api/ping?{query}")
+        resp = conn.getresponse()
+        resp.read()
+        return resp.status == 200
+    except Exception:
+        return False
+    finally:
+        conn.close()
+
+
+def collect_send_targets(paths: list) -> list:
+    """paths: a list of file/folder paths the user picked. Returns
+    (absolute_path, relative_path) pairs -- relative_path is where the
+    phone recreates it under its "Received from PC" folder: just the
+    filename for a loose file, "<folder name>/<subpath>" for anything
+    inside a chosen folder, so folder structure survives the trip."""
+    targets = []
+    for raw in paths:
+        p = Path(raw)
+        if p.is_dir():
+            for root, _dirs, files in os.walk(p):
+                for name in files:
+                    full = Path(root) / name
+                    rel = f"{p.name}/{full.relative_to(p)}".replace(os.sep, "/")
+                    targets.append((full, rel))
+        elif p.is_file():
+            targets.append((p, p.name))
+    return targets
+
+
+def send_file_to_phone(phone: dict, local_path: Path, rel_path: str, on_progress=None):
+    """Streams one file to the phone's /api/receive. Raises
+    PhoneCertMismatch (caller's job to handle) or RuntimeError on any
+    other failure."""
+    conn, _fp = _connect_phone(phone["address"], phone.get("cert_fingerprint"), timeout=30)
+    try:
+        size = local_path.stat().st_size
+        query = urllib.parse.urlencode({
+            "pin": phone["pin"],
+            "relpath": rel_path,
+            "filename": local_path.name,
+        })
+        conn.putrequest("POST", f"/api/receive?{query}")
+        conn.putheader("Content-Type", "application/octet-stream")
+        conn.putheader("Content-Length", str(size))
+        conn.endheaders()
+
+        sent = 0
+        with open(local_path, "rb") as f:
+            while True:
+                chunk = f.read(256 * 1024)
+                if not chunk:
+                    break
+                conn.send(chunk)
+                sent += len(chunk)
+                if on_progress:
+                    on_progress(sent, size)
+
+        resp = conn.getresponse()
+        resp.read()
+        if resp.status == 401:
+            raise RuntimeError("The phone rejected the PIN.")
+        if resp.status != 200:
+            raise RuntimeError(f"Phone returned status {resp.status}.")
+    finally:
+        conn.close()
+
+
 # ---------- tray icon ----------
 
 def build_tray_image():
@@ -355,7 +542,7 @@ def build_tray_image():
         return Image.new("RGB", (64, 64), BLUE)
 
 
-def build_tray_icon(on_open, on_toggle, on_check_updates, on_quit):
+def build_tray_icon(on_open, on_toggle, on_send_to_phone, on_check_updates, on_quit):
     import pystray
 
     return pystray.Icon(
@@ -368,6 +555,7 @@ def build_tray_icon(on_open, on_toggle, on_check_updates, on_quit):
                 lambda item: "Stop server" if server.running else "Start server",
                 on_toggle,
             ),
+            pystray.MenuItem("Send to Phone...", on_send_to_phone),
             pystray.MenuItem("Check for updates", on_check_updates),
             pystray.Menu.SEPARATOR,
             pystray.MenuItem("Quit", on_quit),
@@ -392,7 +580,8 @@ class App:
 
         self._build_ui()
         self.icon = build_tray_icon(
-            self.on_tray_open, self.on_tray_toggle, self.on_tray_check_updates, self.on_quit
+            self.on_tray_open, self.on_tray_toggle, self.on_tray_send_to_phone,
+            self.on_tray_check_updates, self.on_quit
         )
         threading.Thread(target=self.icon.run, daemon=True).start()
 
@@ -484,6 +673,21 @@ class App:
         self.folder_label.pack(anchor="w", padx=12, pady=(0, 8))
         tk.Button(
             folder_frame, text="Change folder...", command=self.on_change_folder,
+            bg=BORDER, fg=TEXT, activebackground=BORDER, activeforeground=TEXT,
+            relief="flat", font=("Segoe UI", 9),
+        ).pack(anchor="w", padx=12, pady=(0, 12))
+
+        send_frame = self._section(self.root)
+        tk.Label(
+            send_frame, text="Send files to a phone", bg=CARD, fg=MUTED, font=("Segoe UI", 9)
+        ).pack(anchor="w", padx=12, pady=(12, 2))
+        tk.Label(
+            send_frame,
+            text="Push files or a whole folder straight onto a phone's storage.",
+            bg=CARD, fg=MUTED, font=("Segoe UI", 8), wraplength=280, justify="left",
+        ).pack(anchor="w", padx=12, pady=(0, 8))
+        tk.Button(
+            send_frame, text="Send to Phone...", command=self.on_send_to_phone,
             bg=BORDER, fg=TEXT, activebackground=BORDER, activeforeground=TEXT,
             relief="flat", font=("Segoe UI", 9),
         ).pack(anchor="w", padx=12, pady=(0, 12))
@@ -589,6 +793,241 @@ class App:
         else:
             self.hint_label.config(text="Saved. Restart the server for this to take effect.")
         self._update_display()
+
+    # ---- send to phone ----
+
+    def on_send_to_phone(self):
+        self._show_phone_picker(load_phones())
+
+    def _dialog(self, title: str) -> tk.Toplevel:
+        dialog = tk.Toplevel(self.root)
+        dialog.title(title)
+        dialog.configure(bg=BG)
+        dialog.resizable(False, False)
+        dialog.transient(self.root)
+        dialog.grab_set()
+        return dialog
+
+    def _show_phone_picker(self, phones: list):
+        dialog = self._dialog("Send to Phone")
+
+        tk.Label(
+            dialog, text="Send to which phone?", bg=BG, fg=TEXT, font=("Segoe UI", 11, "bold")
+        ).pack(anchor="w", padx=16, pady=(16, 8))
+
+        if not phones:
+            tk.Label(
+                dialog, text="No phones added yet.", bg=BG, fg=MUTED, font=("Segoe UI", 9)
+            ).pack(anchor="w", padx=16, pady=(0, 8))
+
+        for phone in phones:
+            tk.Button(
+                dialog, text=phone["name"], anchor="w",
+                command=lambda p=phone: (dialog.destroy(), self._choose_send_kind(p)),
+                bg=CARD, fg=TEXT, activebackground=BORDER, activeforeground=TEXT,
+                relief="flat", font=("Segoe UI", 10), padx=10, pady=8,
+            ).pack(fill="x", padx=16, pady=(0, 6))
+
+        tk.Button(
+            dialog, text="+ Add new phone", anchor="w",
+            command=lambda: (dialog.destroy(), self._show_add_phone_dialog()),
+            bg=BG, fg=BLUE, activebackground=BG, activeforeground=BLUE,
+            relief="flat", font=("Segoe UI", 10, "underline"), padx=10, pady=8,
+        ).pack(fill="x", padx=16, pady=(0, 6))
+
+        tk.Button(
+            dialog, text="Cancel", command=dialog.destroy,
+            bg=BG, fg=MUTED, activebackground=BG, activeforeground=MUTED,
+            relief="flat", font=("Segoe UI", 9),
+        ).pack(anchor="e", padx=16, pady=(4, 16))
+
+    def _show_add_phone_dialog(self):
+        dialog = self._dialog("Add Phone")
+
+        def labeled_entry(label_text):
+            tk.Label(dialog, text=label_text, bg=BG, fg=MUTED, font=("Segoe UI", 9)).pack(
+                anchor="w", padx=16, pady=(12, 2)
+            )
+            var = tk.StringVar()
+            tk.Entry(
+                dialog, textvariable=var, bg=CARD, fg=TEXT, insertbackground=TEXT,
+                relief="flat", font=("Segoe UI", 10), width=32,
+            ).pack(fill="x", padx=16, ipady=4)
+            return var
+
+        name_var = labeled_entry("Name (e.g. Florind's Pixel)")
+        address_var = labeled_entry("Address:port (from the phone's sidebar)")
+        pin_var = labeled_entry("PIN (from the phone's sidebar)")
+
+        status_label = tk.Label(
+            dialog, text="", bg=BG, fg=RED, font=("Segoe UI", 9), wraplength=280, justify="left"
+        )
+        status_label.pack(anchor="w", padx=16, pady=(8, 0))
+
+        def do_connect():
+            name = name_var.get().strip()
+            address = address_var.get().strip()
+            pin = pin_var.get().strip()
+            if not name or not address or not pin:
+                status_label.config(text="Fill in all three fields.")
+                return
+            connect_btn.config(state="disabled", text="Connecting...")
+            status_label.config(text="")
+
+            def worker():
+                try:
+                    fingerprint = connect_and_learn_fingerprint(address, pin)
+                except Exception as e:
+                    self.root.after(0, lambda: (
+                        connect_btn.config(state="normal", text="Connect"),
+                        status_label.config(text=str(e)),
+                    ))
+                    return
+
+                def on_success():
+                    phones = load_phones()
+                    phone = {
+                        "id": secrets.token_hex(8),
+                        "name": name,
+                        "address": address,
+                        "pin": pin,
+                        "cert_fingerprint": fingerprint,
+                    }
+                    phones.append(phone)
+                    save_phones(phones)
+                    dialog.destroy()
+                    self._choose_send_kind(phone)
+
+                self.root.after(0, on_success)
+
+            threading.Thread(target=worker, daemon=True).start()
+
+        connect_btn = tk.Button(
+            dialog, text="Connect", command=do_connect,
+            bg=BLUE, fg=ON_BLUE, activebackground=BLUE, activeforeground=ON_BLUE,
+            relief="flat", font=("Segoe UI", 10, "bold"), padx=10, pady=6,
+        )
+        connect_btn.pack(anchor="w", padx=16, pady=(12, 16))
+
+    def _choose_send_kind(self, phone: dict):
+        dialog = self._dialog("Send to Phone")
+
+        tk.Label(
+            dialog, text=f"Send to {phone['name']}", bg=BG, fg=TEXT, font=("Segoe UI", 11, "bold")
+        ).pack(anchor="w", padx=16, pady=(16, 10))
+
+        def pick_files():
+            dialog.destroy()
+            chosen = filedialog.askopenfilenames(title="Choose files to send")
+            if chosen:
+                self._send_paths_to_phone(phone, list(chosen))
+
+        def pick_folder():
+            dialog.destroy()
+            chosen = filedialog.askdirectory(title="Choose a folder to send")
+            if chosen:
+                self._send_paths_to_phone(phone, [chosen])
+
+        tk.Button(
+            dialog, text="Choose files...", command=pick_files,
+            bg=BLUE, fg=ON_BLUE, activebackground=BLUE, activeforeground=ON_BLUE,
+            relief="flat", font=("Segoe UI", 10, "bold"), padx=10, pady=8,
+        ).pack(fill="x", padx=16, pady=(0, 8))
+
+        tk.Button(
+            dialog, text="Choose a folder...", command=pick_folder,
+            bg=BORDER, fg=TEXT, activebackground=BORDER, activeforeground=TEXT,
+            relief="flat", font=("Segoe UI", 10), padx=10, pady=8,
+        ).pack(fill="x", padx=16, pady=(0, 16))
+
+    def _send_paths_to_phone(self, phone: dict, paths: list):
+        targets = collect_send_targets(paths)
+        if not targets:
+            messagebox.showinfo("PC Bridge", "Nothing to send.")
+            return
+
+        progress = self._dialog("Sending...")
+        progress.protocol("WM_DELETE_WINDOW", lambda: None)  # no closing mid-send
+
+        label = tk.Label(
+            progress, text="Starting...", bg=BG, fg=TEXT, font=("Segoe UI", 10),
+            wraplength=280, justify="left",
+        )
+        label.pack(anchor="w", padx=16, pady=(16, 8))
+        bar = ttk.Progressbar(progress, length=280, mode="determinate", maximum=len(targets))
+        bar.pack(padx=16, pady=(0, 16))
+
+        def worker():
+            sent_count = 0
+            failed = []
+            current_phone = phone
+
+            for index, (local_path, rel_path) in enumerate(targets):
+                def on_progress(sent, total, _rel=rel_path, _i=index):
+                    pct = int(sent * 100 / total) if total else 0
+                    self.root.after(0, lambda: label.config(
+                        text=f"Sending {_i + 1}/{len(targets)}: {_rel} ({pct}%)"
+                    ))
+
+                try:
+                    send_file_to_phone(current_phone, local_path, rel_path, on_progress)
+                    sent_count += 1
+                except PhoneCertMismatch as e:
+                    decision = {}
+                    done = threading.Event()
+
+                    def ask(_e=e):
+                        decision["trust"] = messagebox.askyesno(
+                            "PC Bridge",
+                            f"\"{current_phone['name']}\" is presenting a different security "
+                            "certificate than the one trusted before. This can happen if the "
+                            "app was reinstalled -- but it can also mean someone is "
+                            "intercepting the connection.\n\n"
+                            f"New fingerprint: {_e.actual}\n\n"
+                            "Only continue if you're sure this is expected.",
+                        )
+                        done.set()
+
+                    self.root.after(0, ask)
+                    done.wait()
+                    if decision.get("trust"):
+                        current_phone = dict(current_phone, cert_fingerprint=e.actual)
+                        phones = load_phones()
+                        for i, ph in enumerate(phones):
+                            if ph["id"] == current_phone["id"]:
+                                phones[i] = current_phone
+                        save_phones(phones)
+                        try:
+                            send_file_to_phone(current_phone, local_path, rel_path, on_progress)
+                            sent_count += 1
+                        except Exception as e2:
+                            failed.append((rel_path, str(e2)))
+                    else:
+                        failed.append((rel_path, "certificate not trusted"))
+                        break
+                except Exception as e:
+                    failed.append((rel_path, str(e)))
+
+                self.root.after(0, lambda c=index + 1: bar.config(value=c))
+
+            def finish():
+                progress.destroy()
+                if failed:
+                    lines = "\n".join(f"- {name}: {err}" for name, err in failed[:5])
+                    more = f"\n...and {len(failed) - 5} more" if len(failed) > 5 else ""
+                    messagebox.showwarning(
+                        "PC Bridge",
+                        f"Sent {sent_count}/{len(targets)} to {phone['name']}. "
+                        f"Some failed:\n{lines}{more}",
+                    )
+                else:
+                    messagebox.showinfo(
+                        "PC Bridge", f"Sent {sent_count} file(s) to {phone['name']}."
+                    )
+
+            self.root.after(0, finish)
+
+        threading.Thread(target=worker, daemon=True).start()
 
     # ---- auto-update ----
 
@@ -715,6 +1154,9 @@ class App:
 
     def on_tray_check_updates(self, icon=None, item=None):
         self.root.after(0, lambda: self.check_for_updates(interactive=True))
+
+    def on_tray_send_to_phone(self, icon=None, item=None):
+        self.root.after(0, lambda: (self.show_window(), self.on_send_to_phone()))
 
     def on_quit(self, icon=None, item=None):
         def _quit():
