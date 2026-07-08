@@ -446,7 +446,7 @@ def connect_and_learn_fingerprint(address: str, pin: str) -> str:
         resp.read()
         if resp.status == 401:
             raise RuntimeError("That PIN was rejected by the phone.")
-            if resp.status != 200:
+        if resp.status != 200:
             raise RuntimeError(f"Phone returned status {resp.status}.")
     finally:
         conn.close()
