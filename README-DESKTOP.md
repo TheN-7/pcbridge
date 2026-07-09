@@ -314,6 +314,25 @@ same PIN-checked, certificate-pinned connection as the rest of "Send to
 Phone" underneath it, just reaching further than the phone's Downloads
 folder.
 
+**Opens as a real Explorer window, not a custom dialog.** Clicking
+**Browse phone...** first tries to map the phone as an actual network
+drive and open it in Windows Explorer, using a small WebDAV bridge this
+app runs on `127.0.0.1` (loopback only -- never reachable from your
+network) that translates Explorer's requests into calls against the
+phone's own browse API. If that mapping fails for any reason -- most
+commonly because Windows' built-in WebDAV client (the "WebClient"
+service) is disabled, which is common on a fresh Windows install since
+it's Manual-start by default -- you'll be offered the original built-in
+browser dialog (the two-way file list described above) as a fallback
+instead, so "Browse phone..." never becomes a dead end. If Explorer
+opens but drag/drop or renaming inside it acts oddly, that's Windows'
+own WebDAV client being picky (it has a real-world reputation for this,
+independent of anything this app does) -- the fallback dialog is always
+available as a reliable alternative via the same button if you ever want
+it. This drive-mapping path hasn't been exercised against a real copy of
+Windows Explorer during development; if it doesn't work well on your
+machine, it's worth reporting back what happened.
+
 ## Auto-start at login
 
 Not set up by default (you asked for manual start). If you change your
