@@ -440,6 +440,59 @@ def _connect_phone(address: str, expected_fingerprint: str = None, timeout: int 
     return conn, fingerprint
 
 
+def get_phone_addresses(phone: dict) -> list:
+    """Every address this phone might currently be reachable at, in the
+    order to try them -- the explicit "addresses" list if present (LAN +
+    Tailscale, as registered via /api/register-phone; see
+    NetworkUtil.getLocalAddresses on the Android side), or else just the
+    single legacy "address" field for a phone added before "addresses"
+    existed (manually via Add Phone, or registered by an older phone
+    app). Deduplicated, case-insensitively, order preserved."""
+    addrs = phone.get("addresses") or [phone.get("address")]
+    seen = set()
+    result = []
+    for a in addrs:
+        if a and a.lower() not in seen:
+            seen.add(a.lower())
+            result.append(a)
+    return result
+
+
+def _connect_phone_any(phone: dict, timeout: int = 10):
+    """Like _connect_phone, but tries every address from
+    get_phone_addresses(phone) in order instead of a single fixed one --
+    this is what actually makes a phone reachable regardless of which
+    network it's on right now, since a phone can register both a LAN and
+    a Tailscale address at once. Returns (conn, fingerprint) from
+    whichever address succeeds first.
+
+    A PhoneCertMismatch on one address is remembered but doesn't stop the
+    attempt on the remaining addresses -- it's still surfaced (not
+    swallowed) if every address either mismatches or fails outright,
+    since a fingerprint mismatch is security-relevant and shouldn't be
+    silently skipped past. A plain connection failure (timeout, refused,
+    unreachable) always just moves on to the next address with no
+    user-visible noise -- that's the expected, common case (e.g. the LAN
+    address is stale because the phone changed networks since it last
+    registered)."""
+    addresses = get_phone_addresses(phone)
+    if not addresses:
+        raise RuntimeError("This phone has no known address.")
+
+    last_error = None
+    cert_mismatch = None
+    for address in addresses:
+        try:
+            return _connect_phone(address, phone.get("cert_fingerprint"), timeout=timeout)
+        except PhoneCertMismatch as e:
+            cert_mismatch = e
+        except Exception as e:
+            last_error = e
+    if cert_mismatch is not None:
+        raise cert_mismatch
+    raise last_error or RuntimeError("Couldn't reach this phone at any known address.")
+
+
 def connect_and_learn_fingerprint(address: str, pin: str) -> str:
     """Used by Add Phone: connects without an expected fingerprint (there's
     nothing pinned yet), verifies the PIN is right, and returns the
@@ -471,7 +524,7 @@ def ping_phone(phone: dict) -> bool:
     while -- no timeout on this side fixes that, it's a phone-side
     background-execution limit, not a network one."""
     try:
-        conn, _fp = _connect_phone(phone["address"], phone.get("cert_fingerprint"), timeout=8)
+        conn, _fp = _connect_phone_any(phone, timeout=8)
     except Exception:
         return False
     try:
@@ -510,7 +563,7 @@ def send_file_to_phone(phone: dict, local_path: Path, rel_path: str, on_progress
     """Streams one file to the phone's /api/receive. Raises
     PhoneCertMismatch (caller's job to handle) or RuntimeError on any
     other failure."""
-    conn, _fp = _connect_phone(phone["address"], phone.get("cert_fingerprint"), timeout=30)
+    conn, _fp = _connect_phone_any(phone, timeout=30)
     try:
         size = local_path.stat().st_size
         query = urllib.parse.urlencode({
@@ -564,7 +617,7 @@ def _phone_error(body: bytes, status: int) -> str:
 
 
 def list_phone_dir(phone: dict, path: str = "") -> dict:
-    conn, _fp = _connect_phone(phone["address"], phone.get("cert_fingerprint"), timeout=15)
+    conn, _fp = _connect_phone_any(phone, timeout=15)
     try:
         query = urllib.parse.urlencode({"pin": phone["pin"], "path": path})
         conn.request("GET", f"/api/browse/list?{query}")
@@ -578,7 +631,7 @@ def list_phone_dir(phone: dict, path: str = "") -> dict:
 
 
 def download_file_from_phone(phone: dict, remote_path: str, dest_path: Path, on_progress=None):
-    conn, _fp = _connect_phone(phone["address"], phone.get("cert_fingerprint"), timeout=30)
+    conn, _fp = _connect_phone_any(phone, timeout=30)
     try:
         query = urllib.parse.urlencode({"pin": phone["pin"], "path": remote_path})
         conn.request("GET", f"/api/browse/download?{query}")
@@ -602,7 +655,7 @@ def download_file_from_phone(phone: dict, remote_path: str, dest_path: Path, on_
 
 
 def upload_file_to_phone(phone: dict, local_path: Path, remote_dir: str, on_progress=None):
-    conn, _fp = _connect_phone(phone["address"], phone.get("cert_fingerprint"), timeout=30)
+    conn, _fp = _connect_phone_any(phone, timeout=30)
     try:
         size = local_path.stat().st_size
         query = urllib.parse.urlencode({
@@ -641,7 +694,7 @@ def open_phone_download_stream(phone: dict, remote_path: str):
     GET handler (see PhoneWebDavHandler) to stream a file straight through
     to Explorer's request instead of buffering the whole thing to disk
     first."""
-    conn, _fp = _connect_phone(phone["address"], phone.get("cert_fingerprint"), timeout=30)
+    conn, _fp = _connect_phone_any(phone, timeout=30)
     query = urllib.parse.urlencode({"pin": phone["pin"], "path": remote_path})
     conn.request("GET", f"/api/browse/download?{query}")
     resp = conn.getresponse()
@@ -658,7 +711,7 @@ def stream_upload_to_phone(phone: dict, remote_dir: str, filename: str, size: in
     lets the WebDAV bridge relay a PUT straight through without buffering
     the whole upload to a temp file first. size must be known upfront
     (Explorer's WebDAV PUT requests always send Content-Length)."""
-    conn, _fp = _connect_phone(phone["address"], phone.get("cert_fingerprint"), timeout=60)
+    conn, _fp = _connect_phone_any(phone, timeout=60)
     try:
         query = urllib.parse.urlencode({
             "pin": phone["pin"],
@@ -687,7 +740,7 @@ def stream_upload_to_phone(phone: dict, remote_dir: str, filename: str, size: in
 
 
 def mkdir_on_phone(phone: dict, path: str) -> None:
-    conn, _fp = _connect_phone(phone["address"], phone.get("cert_fingerprint"), timeout=15)
+    conn, _fp = _connect_phone_any(phone, timeout=15)
     try:
         query = urllib.parse.urlencode({"pin": phone["pin"], "path": path})
         conn.request("POST", f"/api/browse/mkdir?{query}")
@@ -700,7 +753,7 @@ def mkdir_on_phone(phone: dict, path: str) -> None:
 
 
 def delete_on_phone(phone: dict, path: str) -> None:
-    conn, _fp = _connect_phone(phone["address"], phone.get("cert_fingerprint"), timeout=30)
+    conn, _fp = _connect_phone_any(phone, timeout=30)
     try:
         query = urllib.parse.urlencode({"pin": phone["pin"], "path": path})
         conn.request("POST", f"/api/browse/delete?{query}")
@@ -713,7 +766,7 @@ def delete_on_phone(phone: dict, path: str) -> None:
 
 
 def rename_on_phone(phone: dict, path: str, new_name: str) -> None:
-    conn, _fp = _connect_phone(phone["address"], phone.get("cert_fingerprint"), timeout=15)
+    conn, _fp = _connect_phone_any(phone, timeout=15)
     try:
         query = urllib.parse.urlencode({"pin": phone["pin"], "path": path, "new_name": new_name})
         conn.request("POST", f"/api/browse/rename?{query}")
@@ -1510,6 +1563,15 @@ class App:
                         "id": secrets.token_hex(8),
                         "name": name,
                         "address": address,
+                        # A manually-typed address is the only one known
+                        # yet -- get_phone_addresses() falls back to this
+                        # single-item list either way, but writing it out
+                        # explicitly means a later /api/register-phone
+                        # call from this same phone (once it turns on
+                        # "Allow receiving files") can match and extend
+                        # it, rather than creating a second duplicate
+                        # entry for the same phone.
+                        "addresses": [address],
                         "pin": pin,
                         "cert_fingerprint": fingerprint,
                     }

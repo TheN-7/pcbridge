@@ -373,6 +373,7 @@ async def register_phone(
     request: Request,
     name: str = Form(...),
     address: str = Form(...),
+    addresses: str = Form(""),
     phone_pin: str = Form(...),
     cert_fingerprint: str = Form(...),
 ):
@@ -384,19 +385,39 @@ async def register_phone(
     *different* PIN, the phone's own receive-server one, which this PC
     will present back to the phone later when actually sending a file.
 
+    [address] is the phone's single primary address (LAN-preferred),
+    kept for backward compatibility with older phone apps that only ever
+    sent one. [addresses], comma-joined, is the fuller list (LAN +
+    Tailscale, whichever the phone currently has) -- pcbridge_app.py's
+    _connect_phone_any() tries every address in this list in order on
+    every connect, so it no longer matters which network either device
+    happens to be on: whichever address works, works. A phone's own
+    NetworkInterface enumeration order isn't stable across app restarts
+    (see NetworkUtil.kt's getLocalAddresses doc comment), which used to
+    mean the exact same phone could silently register a different
+    "primary" address every time -- storing the whole list here, and
+    matching on any overlap below, is what stops that from creating
+    duplicate/stale entries or timing out on a stale single address.
+
     Writes to the same phones.json the desktop tray app's "Send to Phone"
     feature already reads fresh every time that dialog opens, so a newly
     registered phone shows up there immediately with no extra plumbing."""
     check_pin(request)
+    addr_list = [a.strip() for a in addresses.split(",") if a.strip()] or [address]
+    addr_set = {a.lower() for a in addr_list}
+
     phones = load_phones()
-    existing_index = next(
-        (i for i, p in enumerate(phones) if p.get("address", "").lower() == address.lower()),
-        None,
-    )
+
+    def matches(p: dict) -> bool:
+        known = {a.lower() for a in p.get("addresses") or [p.get("address", "")]}
+        return bool(known & addr_set)
+
+    existing_index = next((i for i, p in enumerate(phones) if matches(p)), None)
     entry = {
         "id": phones[existing_index]["id"] if existing_index is not None else secrets.token_hex(8),
         "name": name,
         "address": address,
+        "addresses": addr_list,
         "pin": phone_pin,
         "cert_fingerprint": cert_fingerprint,
     }

@@ -282,6 +282,20 @@ Either way, the PC remembers the phone (in `phones.json`, gitignored like
 structure -- everything lands on the phone under **Downloads/Received
 from PC/**.
 
+**Works across networks automatically, if you have Tailscale.** A phone
+reports both its LAN address and a Tailscale address (if Tailscale is
+running on it) when it registers, and the PC stores both and tries each
+one in turn on every connect -- LAN first (fastest when you're on the
+same Wi-Fi), Tailscale as an automatic fallback otherwise. You don't need
+to re-add a phone just because you're on a different network than last
+time; if either address still works, it connects. This needs Tailscale
+running on **both** the PC and the phone to actually help -- with only
+one side on Tailscale, or neither, a phone is only reachable while both
+devices share the same LAN, same as before. A phone added manually before
+this existed, or with an older phone app, only has its single typed
+address remembered until it re-registers (turn "Allow receiving files"
+off and back on to force that).
+
 **Online status:** opening **Send to Phone...** pings every remembered
 phone in the background and colors a dot next to its name green
 (reachable right now) or red (not reachable -- asleep, off Wi-Fi, or the
