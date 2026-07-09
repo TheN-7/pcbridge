@@ -46,6 +46,7 @@ import urllib.parse
 import urllib.request
 import uuid
 import xml.sax.saxutils as saxutils
+from datetime import datetime
 from email.utils import formatdate
 from pathlib import Path
 from tkinter import filedialog, messagebox, ttk
@@ -116,6 +117,12 @@ def load_config() -> dict:
         "update_repo": UPDATE_REPO or None,   # "yourusername/pcbridge"
         "update_token": UPDATE_TOKEN or None,  # fine-grained PAT, read-only, this repo only
         "auto_check_updates": True,
+        # Set to True the first time mapping a phone as an Explorer network
+        # drive fails (see App._disable_webdav) -- once that's happened,
+        # "Browse phone..." skips straight to the built-in browser instead
+        # of retrying a bridge attempt already known not to work on this
+        # PC. Reset from the browser window's "Try as network drive" link.
+        "webdav_disabled": False,
     }
     if CONFIG_PATH.exists():
         try:
@@ -1175,6 +1182,7 @@ class App:
         self.root.resizable(False, False)
         self.root.protocol("WM_DELETE_WINDOW", self.hide_window)
 
+        self._configure_ttk_style()
         self._build_ui()
         self.icon = build_tray_icon(
             self.on_tray_open, self.on_tray_toggle, self.on_tray_send_to_phone,
@@ -1188,6 +1196,40 @@ class App:
             self.root.after(2000, lambda: self.check_for_updates(interactive=False))
 
     # ---- layout ----
+
+    def _configure_ttk_style(self):
+        """One-time ttk theme setup so the phone browser's Treeview (the
+        only ttk widget in this file -- everything else is plain tk,
+        styled directly via bg=/fg= kwargs) matches the rest of the app's
+        Midnight theme instead of the OS's default look. "clam" is the
+        base theme because it's the only built-in ttk theme that reliably
+        honors color overrides for Treeview on Windows -- the native
+        "vista"/"winnative" themes silently ignore background/foreground
+        settings for it."""
+        style = ttk.Style(self.root)
+        style.theme_use("clam")
+        style.configure(
+            "Phone.Treeview",
+            background=CARD, fieldbackground=CARD, foreground=TEXT,
+            rowheight=30, borderwidth=0, font=("Segoe UI", 10),
+        )
+        style.map(
+            "Phone.Treeview",
+            background=[("selected", BLUE)],
+            foreground=[("selected", ON_BLUE)],
+        )
+        style.configure(
+            "Phone.Treeview.Heading",
+            background=BORDER, foreground=MUTED, relief="flat",
+            font=("Segoe UI", 9, "bold"), borderwidth=0,
+        )
+        style.map("Phone.Treeview.Heading", background=[("active", BORDER)])
+        style.layout("Phone.Vertical.TScrollbar", style.layout("Vertical.TScrollbar"))
+        style.configure(
+            "Phone.Vertical.TScrollbar",
+            background=BORDER, troughcolor=BG, bordercolor=BG,
+            arrowsize=12, relief="flat",
+        )
 
     def _section(self, parent):
         frame = tk.Frame(parent, bg=CARD, highlightbackground=BORDER, highlightthickness=1)
@@ -1640,15 +1682,25 @@ class App:
         custom browser window. Falls back to that custom window if mapping
         fails for any reason -- most likely Windows' "WebClient" service
         (its built-in WebDAV client) being disabled, which is common on a
-        fresh install since it's Manual-start by default."""
-        if sys.platform != "win32":
+        fresh install since it's Manual-start by default.
+
+        Once mapping has failed once, self.config["webdav_disabled"] is
+        set (see _disable_webdav) and every later call short-circuits
+        straight to the browser -- no repeated bridge-start/`net use`
+        attempts, and no repeated "couldn't map a drive" popup on a PC
+        where that's already known not to work. The browser window's
+        header has a "Try as network drive" link that clears the flag and
+        calls back into this method, for the rare case WebClient gets
+        enabled later."""
+        if sys.platform != "win32" or self.config.get("webdav_disabled"):
             self._show_phone_browser(phone)
             return
 
         try:
             port = start_webdav_bridge(phone)
         except Exception as e:
-            messagebox.showerror("PC Bridge", f"Couldn't start the local bridge:\n{e}")
+            self._disable_webdav(f"Couldn't start the local bridge:\n{e}")
+            self._show_phone_browser(phone)
             return
 
         # The WebClient service is Manual-start on most non-Server Windows
@@ -1668,17 +1720,30 @@ class App:
 
         drive = self._map_free_drive(port)
         if drive is None:
-            if messagebox.askyesno(
-                "PC Bridge",
+            self._disable_webdav(
                 "Couldn't open this phone as a network drive in Explorer -- "
-                "Windows' built-in WebDAV client (the \"WebClient\" service) "
-                "may be disabled on this PC. Open the built-in browser "
-                "window instead?",
-            ):
-                self._show_phone_browser(phone)
+                "Windows' built-in WebDAV client (the \"WebClient\" "
+                "service) appears to be unavailable on this PC. Opening "
+                "the built-in browser instead; \"Browse phone...\" won't "
+                "try this again unless you ask it to."
+            )
+            self._show_phone_browser(phone)
             return
 
         subprocess.Popen(["explorer.exe", f"{drive}:\\"])
+
+    def _disable_webdav(self, message: str):
+        """Called the moment drive-mapping fails for the first time --
+        remembers that permanently in config.json so every subsequent
+        "Browse phone..." click skips the whole bridge/mapping attempt
+        (which just wastes several seconds and always fails the same way
+        on a PC where WebClient genuinely isn't available) and goes
+        straight to the browser instead. Shown once as a plain heads-up,
+        not a yes/no prompt -- there's nothing to decide anymore, the
+        browser is opening either way."""
+        self.config["webdav_disabled"] = True
+        save_config(self.config)
+        messagebox.showinfo("PC Bridge", message)
 
     def _map_free_drive(self, port: int) -> str | None:
         """Maps the WebDAV bridge at 127.0.0.1:port onto the first unused
@@ -1707,52 +1772,145 @@ class App:
         that phone to have granted itself "All files access" (see
         pcbridge-android's DeviceSidebar); if it hasn't, every action below
         just surfaces that server's own explanation instead of failing
-        mysteriously."""
+        mysteriously.
+
+        Uses a ttk.Treeview (see _configure_ttk_style) instead of a plain
+        Listbox -- gives native multi-select, per-row icons (a Unicode
+        glyph prefix, guessed from extension -- no image assets to bundle
+        or package), and Size/Modified columns for free, plus a clickable
+        breadcrumb path bar instead of a raw "/a/b/c" label."""
         dialog = self._dialog(f"Browse {phone['name']}")
         dialog.resizable(True, True)
-        dialog.geometry("480x420")
+        dialog.geometry("680x480")
 
         # state["path"]/["parent"]/["entries"] instead of plain locals --
         # every nested callback below (refresh/navigate/download/upload)
         # only ever mutates dict contents, never rebinds the name, so none
         # of them need `nonlocal` to see each other's updates.
         state = {"path": "", "parent": None, "entries": []}
+        # Treeview item id -> "__parent__" or the matching entry dict from
+        # the last /api/browse/list result, rebuilt on every refresh --
+        # the Treeview equivalent of the old entry_at() index lookup.
+        row_targets = {}
 
-        path_label = tk.Label(
-            dialog, text="/", bg=BG, fg=MUTED, font=("Segoe UI", 9), anchor="w"
-        )
-        path_label.pack(fill="x", padx=16, pady=(12, 4))
+        header_row = tk.Frame(dialog, bg=BG)
+        header_row.pack(fill="x", padx=16, pady=(16, 0))
+
+        title_col = tk.Frame(header_row, bg=BG)
+        title_col.pack(side="left")
+        tk.Label(
+            title_col, text=f"\U0001F4F1  {phone['name']}", bg=BG, fg=TEXT,
+            font=("Segoe UI", 13, "bold"),
+        ).pack(anchor="w")
+        tk.Label(
+            title_col, text="Browse, download, and upload files on this phone.",
+            bg=BG, fg=MUTED, font=("Segoe UI", 9),
+        ).pack(anchor="w", pady=(2, 0))
+
+        # Only shown once WebDAV drive-mapping has already failed once for
+        # this PC (see App._disable_webdav) -- lets you manually retry
+        # without hunting for a setting, e.g. after enabling Windows'
+        # WebClient service yourself.
+        if sys.platform == "win32" and self.config.get("webdav_disabled"):
+            def try_webdav_again(_event=None):
+                self.config["webdav_disabled"] = False
+                save_config(self.config)
+                dialog.destroy()
+                self._open_phone_explorer(phone)
+
+            retry_label = tk.Label(
+                header_row, text="Try as network drive", bg=BG, fg=BLUE,
+                font=("Segoe UI", 9, "underline"), cursor="hand2",
+            )
+            retry_label.pack(side="right", anchor="n", pady=(4, 0))
+            retry_label.bind("<Button-1>", try_webdav_again)
+
+        breadcrumb_frame = tk.Frame(dialog, bg=BG)
+        breadcrumb_frame.pack(fill="x", padx=16, pady=(14, 6))
+
+        def update_breadcrumbs():
+            for widget in breadcrumb_frame.winfo_children():
+                widget.destroy()
+            parts = [p for p in state["path"].split("/") if p]
+            crumbs = [("\U0001F3E0 Home", "")]
+            accumulated = []
+            for part in parts:
+                accumulated.append(part)
+                crumbs.append((part, "/".join(accumulated)))
+
+            for i, (text, crumb_path) in enumerate(crumbs):
+                is_last = i == len(crumbs) - 1
+                label = tk.Label(
+                    breadcrumb_frame, text=text, bg=BG,
+                    fg=TEXT if is_last else BLUE,
+                    font=("Segoe UI", 10, "bold" if is_last else "normal"),
+                    cursor="arrow" if is_last else "hand2",
+                )
+                label.pack(side="left")
+                if not is_last:
+                    def go(_event=None, p=crumb_path):
+                        state["path"] = p
+                        refresh()
+
+                    label.bind("<Button-1>", go)
+                    tk.Label(
+                        breadcrumb_frame, text="  ›  ", bg=BG, fg=MUTED,
+                        font=("Segoe UI", 10),
+                    ).pack(side="left")
 
         list_frame = tk.Frame(dialog, bg=BG)
         list_frame.pack(fill="both", expand=True, padx=16, pady=(0, 8))
 
-        scrollbar = tk.Scrollbar(list_frame)
-        scrollbar.pack(side="right", fill="y")
-        listbox = tk.Listbox(
-            list_frame, bg=CARD, fg=TEXT, selectbackground=BLUE, selectforeground=ON_BLUE,
-            font=("Segoe UI", 10), relief="flat", highlightthickness=0,
-            yscrollcommand=scrollbar.set, selectmode="extended", activestyle="none",
+        tree = ttk.Treeview(
+            list_frame, columns=("size", "modified"), show="tree headings",
+            style="Phone.Treeview", selectmode="extended",
         )
-        listbox.pack(side="left", fill="both", expand=True)
-        scrollbar.config(command=listbox.yview)
+        tree.heading("#0", text="Name", anchor="w")
+        tree.heading("size", text="Size", anchor="e")
+        tree.heading("modified", text="Modified", anchor="w")
+        tree.column("#0", anchor="w", width=340, minwidth=160, stretch=True)
+        tree.column("size", anchor="e", width=90, minwidth=70, stretch=False)
+        tree.column("modified", anchor="w", width=150, minwidth=120, stretch=False)
+        tree.tag_configure("even", background=CARD)
+        tree.tag_configure("odd", background="#20242b")  # a shade lighter than CARD, for zebra striping
+
+        vsb = ttk.Scrollbar(
+            list_frame, orient="vertical", command=tree.yview, style="Phone.Vertical.TScrollbar"
+        )
+        tree.configure(yscrollcommand=vsb.set)
+        tree.pack(side="left", fill="both", expand=True)
+        vsb.pack(side="right", fill="y")
 
         status_label = tk.Label(
             dialog, text="Loading...", bg=BG, fg=MUTED, font=("Segoe UI", 9),
-            wraplength=440, justify="left",
+            wraplength=640, justify="left",
         )
-        status_label.pack(anchor="w", padx=16, pady=(0, 4))
+        status_label.pack(anchor="w", padx=16, pady=(6, 4))
 
-        def entry_at(index):
-            """Maps a Listbox row index back to either "__parent__" (the
-            ".." row, only present when not at the phone's storage root) or
-            the matching entry dict from the last /api/browse/list result."""
-            has_parent = state["parent"] is not None
-            if has_parent:
-                if index == 0:
-                    return "__parent__"
-                index -= 1
-            entries = state["entries"]
-            return entries[index] if 0 <= index < len(entries) else None
+        def icon_for(entry) -> str:
+            if not entry["is_dir"]:
+                ext = entry["name"].rsplit(".", 1)[-1].lower() if "." in entry["name"] else ""
+                return {
+                    "jpg": "\U0001F5BC", "jpeg": "\U0001F5BC", "png": "\U0001F5BC",
+                    "gif": "\U0001F5BC", "webp": "\U0001F5BC", "heic": "\U0001F5BC",
+                    "mp4": "\U0001F3AC", "mov": "\U0001F3AC", "mkv": "\U0001F3AC", "avi": "\U0001F3AC",
+                    "mp3": "\U0001F3B5", "wav": "\U0001F3B5", "m4a": "\U0001F3B5", "flac": "\U0001F3B5",
+                    "zip": "\U0001F5DC", "rar": "\U0001F5DC", "7z": "\U0001F5DC", "tar": "\U0001F5DC", "gz": "\U0001F5DC",
+                    "pdf": "\U0001F4D5",
+                    "doc": "\U0001F4DD", "docx": "\U0001F4DD", "txt": "\U0001F4DD", "md": "\U0001F4DD",
+                    "xls": "\U0001F4CA", "xlsx": "\U0001F4CA", "csv": "\U0001F4CA",
+                    "ppt": "\U0001F4FD", "pptx": "\U0001F4FD",
+                    "apk": "\U0001F4E6",
+                }.get(ext, "\U0001F4C4")
+            return "\U0001F4C1"
+
+        def fmt_modified(ms) -> str:
+            if not ms:
+                return ""
+            try:
+                return datetime.fromtimestamp(ms / 1000).strftime("%Y-%m-%d %H:%M")
+            except Exception:
+                return ""
 
         def refresh():
             status_label.config(text="Loading...", fg=MUTED)
@@ -1768,30 +1926,44 @@ class App:
                     state["path"] = result.get("path", "")
                     state["parent"] = result.get("parent")
                     state["entries"] = result.get("entries", [])
-                    path_label.config(text="/" + state["path"])
-                    listbox.delete(0, "end")
+                    update_breadcrumbs()
+
+                    tree.delete(*tree.get_children())
+                    row_targets.clear()
+                    row_index = 0
+
                     if state["parent"] is not None:
-                        listbox.insert("end", "..")
-                    for entry in state["entries"]:
-                        if entry["is_dir"]:
-                            listbox.insert("end", f"[DIR]  {entry['name']}")
-                        else:
-                            listbox.insert("end", f"{entry['name']}  ({_fmt_bytes(entry.get('size') or 0)})")
-                    for i in range(listbox.size()):
-                        target = entry_at(i)
-                        if target == "__parent__" or (isinstance(target, dict) and target["is_dir"]):
-                            listbox.itemconfig(i, {"fg": BLUE})
+                        tree.insert(
+                            "", "end", iid="__up__", text="⬆  ..",
+                            values=("", ""), tags=("even",),
+                        )
+                        row_targets["__up__"] = "__parent__"
+                        row_index += 1
+
+                    for i, entry in enumerate(state["entries"]):
+                        iid = f"e{i}"
+                        size_text = "" if entry["is_dir"] else _fmt_bytes(entry.get("size") or 0)
+                        tag = "even" if row_index % 2 == 0 else "odd"
+                        tree.insert(
+                            "", "end", iid=iid,
+                            text=f"{icon_for(entry)}  {entry['name']}",
+                            values=(size_text, fmt_modified(entry.get("modified"))),
+                            tags=(tag,),
+                        )
+                        row_targets[iid] = entry
+                        row_index += 1
+
                     status_label.config(text=f"{len(state['entries'])} item(s).", fg=MUTED)
 
                 self.root.after(0, apply)
 
             threading.Thread(target=worker, daemon=True).start()
 
-        def on_double_click(_event=None):
-            sel = listbox.curselection()
-            if not sel:
+        def on_double_click(event=None):
+            iid = tree.identify_row(event.y) if event else (tree.focus() or None)
+            if not iid:
                 return
-            target = entry_at(sel[0])
+            target = row_targets.get(iid)
             if target == "__parent__":
                 state["path"] = state["parent"] or ""
                 refresh()
@@ -1799,12 +1971,12 @@ class App:
                 state["path"] = f"{state['path']}/{target['name']}" if state["path"] else target["name"]
                 refresh()
 
-        listbox.bind("<Double-Button-1>", on_double_click)
+        tree.bind("<Double-Button-1>", on_double_click)
 
         def selected_files():
             files = []
-            for index in listbox.curselection():
-                target = entry_at(index)
+            for iid in tree.selection():
+                target = row_targets.get(iid)
                 if isinstance(target, dict) and not target["is_dir"]:
                     files.append(target)
             return files
@@ -1880,29 +2052,39 @@ class App:
             if chosen:
                 upload_paths([chosen])
 
+        def hoverable(widget, base_bg, hover_bg):
+            """Small polish touch -- plain tk.Button has no hover state of
+            its own (unlike ttk), so this fakes one by swapping bg on
+            Enter/Leave. Cheap, but it's the difference between these
+            buttons feeling static and feeling like part of an app that's
+            actually responding to the cursor."""
+            widget.bind("<Enter>", lambda _e: widget.config(bg=hover_bg))
+            widget.bind("<Leave>", lambda _e: widget.config(bg=base_bg))
+            return widget
+
         btn_row = tk.Frame(dialog, bg=BG)
         btn_row.pack(fill="x", padx=16, pady=(0, 16))
 
-        tk.Button(
-            btn_row, text="Download selected", command=do_download,
+        hoverable(tk.Button(
+            btn_row, text="⬇  Download selected", command=do_download,
             bg=BLUE, fg=ON_BLUE, activebackground=BLUE, activeforeground=ON_BLUE,
-            relief="flat", font=("Segoe UI", 9, "bold"), padx=8, pady=6,
-        ).pack(side="left")
-        tk.Button(
-            btn_row, text="Upload files...", command=do_upload_files,
+            relief="flat", font=("Segoe UI", 9, "bold"), padx=10, pady=7, cursor="hand2",
+        ), BLUE, "#5cc9fb").pack(side="left")
+        hoverable(tk.Button(
+            btn_row, text="⬆  Upload files...", command=do_upload_files,
             bg=BORDER, fg=TEXT, activebackground=BORDER, activeforeground=TEXT,
-            relief="flat", font=("Segoe UI", 9), padx=8, pady=6,
-        ).pack(side="left", padx=(6, 0))
-        tk.Button(
-            btn_row, text="Upload folder...", command=do_upload_folder,
+            relief="flat", font=("Segoe UI", 9), padx=10, pady=7, cursor="hand2",
+        ), BORDER, "#343a42").pack(side="left", padx=(8, 0))
+        hoverable(tk.Button(
+            btn_row, text="\U0001F4C1  Upload folder...", command=do_upload_folder,
             bg=BORDER, fg=TEXT, activebackground=BORDER, activeforeground=TEXT,
-            relief="flat", font=("Segoe UI", 9), padx=8, pady=6,
-        ).pack(side="left", padx=(6, 0))
-        tk.Button(
+            relief="flat", font=("Segoe UI", 9), padx=10, pady=7, cursor="hand2",
+        ), BORDER, "#343a42").pack(side="left", padx=(8, 0))
+        hoverable(tk.Button(
             btn_row, text="Close", command=dialog.destroy,
-            bg=BG, fg=MUTED, activebackground=BG, activeforeground=MUTED,
-            relief="flat", font=("Segoe UI", 9),
-        ).pack(side="right")
+            bg=BG, fg=MUTED, activebackground=BG, activeforeground=TEXT,
+            relief="flat", font=("Segoe UI", 9), cursor="hand2",
+        ), BG, BG).pack(side="right")
 
         refresh()
 
