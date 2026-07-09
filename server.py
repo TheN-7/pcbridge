@@ -155,6 +155,18 @@ CONFIG = load_config()
 ROOT_DIR = Path(CONFIG["root_dir"]).expanduser().resolve()
 PIN = str(CONFIG["pin"])
 PORT = int(CONFIG.get("port", 8000))
+# A second, plain-HTTP listener purely for opening this PC's web UI in a
+# regular browser. Browsers have no way to trust-on-first-use pin a
+# self-signed certificate the way the native phone/PC apps do (see
+# ensure_certificate's docstring) -- they just show a security warning
+# every time, and older/stricter browsers can refuse the connection
+# outright. Native apps are completely unaffected: pcbridge_app.py's
+# _connect_phone_any() and the Android app both only ever talk to PORT
+# (HTTPS, pinned), never this one. The tradeoff: anything sent to this
+# port -- including the PIN, on every request -- travels in cleartext
+# over your LAN. Fine for a private home network; worth knowing if you're
+# on a network you don't fully trust.
+HTTP_PORT = int(CONFIG.get("http_port") or PORT + 1)
 
 if not ROOT_DIR.exists():
     raise SystemExit(f"root_dir does not exist: {ROOT_DIR}")
@@ -489,7 +501,17 @@ def run():
     re-invoking this file by path -- the latter doesn't work once this
     project is packaged into a single frozen EXE, since there's no
     separate server.py file sitting on disk to point at anymore.
+
+    Runs two listeners concurrently on the same app: the original pinned
+    HTTPS one on PORT (unchanged -- this is the only one native phone/PC
+    apps ever talk to), plus a plain-HTTP one on HTTP_PORT for opening the
+    web UI in a regular browser without a certificate warning getting in
+    the way. uvicorn.Server().serve() is just a coroutine, so both run
+    side by side under one asyncio event loop in this one process/thread
+    -- no need for a second subprocess or port-forwarding trick.
     """
+    import asyncio
+
     import uvicorn
 
     ip = lan_ip()
@@ -497,18 +519,23 @@ def run():
     print(" PC Bridge is starting")
     print(f" Serving folder: {ROOT_DIR}")
     print(f" PIN: {PIN}")
-    print(f" Open on your phone:  https://{ip}:{PORT}")
+    print(f" Open in a browser:   http://{ip}:{HTTP_PORT}")
+    print(f" Phone/PC apps use:   https://{ip}:{PORT}")
     print(f" Certificate fingerprint: {CERT_FINGERPRINT}")
     print(" (apps trust this automatically the first time they connect --")
     print("  this is only here if you want to double-check it by eye)")
     print("=" * 50)
-    uvicorn.run(
-        app,
-        host="0.0.0.0",
-        port=PORT,
-        ssl_certfile=str(CERT_PATH),
-        ssl_keyfile=str(KEY_PATH),
-    )
+
+    https_server = uvicorn.Server(uvicorn.Config(
+        app, host="0.0.0.0", port=PORT,
+        ssl_certfile=str(CERT_PATH), ssl_keyfile=str(KEY_PATH),
+    ))
+    http_server = uvicorn.Server(uvicorn.Config(app, host="0.0.0.0", port=HTTP_PORT))
+
+    async def serve_both():
+        await asyncio.gather(https_server.serve(), http_server.serve())
+
+    asyncio.run(serve_both())
 
 
 if __name__ == "__main__":

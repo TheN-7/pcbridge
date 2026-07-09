@@ -49,9 +49,18 @@ open the window, then press **Start server**.
 ## What the window shows
 
 - **Status** — a red/green dot and Start/Stop button.
-- **Address** — appears once running; click it to copy it to your
-  clipboard (this is what you type into the Android app or a browser on
-  your phone).
+- **Address** — appears once running, two lines. The `https://` one is
+  what the Android app and this PC's own "Send to Phone"/"Send to PC"
+  features use — it's a self-signed, TOFU-pinned certificate the apps
+  trust automatically, so it's never shown to you as a warning there. The
+  `http://` one below it (a different port, PORT+1 by default) is what to
+  actually type into a regular web browser — browsers have no way to pin
+  a self-signed cert like the apps do, so pointing a browser at the
+  `https://` address instead gets you a security warning at best and a
+  refused connection at worst. Click either line to copy it. The tradeoff
+  for the plain-HTTP one: your PIN travels unencrypted on your LAN for
+  browser requests specifically — fine for a private home network, worth
+  knowing if you're not sure who else is on it.
 - **PIN** — the PIN your phone enters. **Randomize** picks a new random
   one; **Save** stores whatever's typed in the box. If the server is
   currently running, you'll be asked whether to restart it so the new

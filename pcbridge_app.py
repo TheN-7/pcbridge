@@ -1254,8 +1254,19 @@ class App:
         self.address_label = tk.Label(
             status_frame, text="", bg=CARD, fg=BLUE, font=("Segoe UI", 10), cursor="hand2"
         )
-        self.address_label.pack(anchor="w", padx=12, pady=(0, 10))
+        self.address_label.pack(anchor="w", padx=12, pady=(0, 2))
         self.address_label.bind("<Button-1>", self.on_copy_address)
+
+        # A second, plain-HTTP address (see server.py's HTTP_PORT) just for
+        # opening the web UI in a regular browser -- browsers can't pin a
+        # self-signed cert the way the native apps do, so this sidesteps
+        # the security-warning/refused-connection experience entirely.
+        # Phone/PC apps keep using the HTTPS address above, unchanged.
+        self.browser_address_label = tk.Label(
+            status_frame, text="", bg=CARD, fg=MUTED, font=("Segoe UI", 9), cursor="hand2"
+        )
+        self.browser_address_label.pack(anchor="w", padx=12, pady=(0, 10))
+        self.browser_address_label.bind("<Button-1>", self.on_copy_browser_address)
 
         self.toggle_btn = tk.Button(
             status_frame,
@@ -1364,11 +1375,14 @@ class App:
         self.status_label.config(text="Running" if running else "Stopped")
         self.toggle_btn.config(text="Stop server" if running else "Start server")
         if running:
-            self.address_label.config(
-                text=f"https://{lan_ip()}:{self.config.get('port', 8000)}"
-            )
+            port = self.config.get("port", 8000)
+            http_port = self.config.get("http_port") or port + 1
+            ip = lan_ip()
+            self.address_label.config(text=f"https://{ip}:{port}  (phone/PC apps)")
+            self.browser_address_label.config(text=f"http://{ip}:{http_port}  (open in a browser)")
         else:
             self.address_label.config(text="Not reachable while stopped")
+            self.browser_address_label.config(text="")
 
     def on_toggle_clicked(self):
         if server.running:
@@ -1394,9 +1408,19 @@ class App:
         text = self.address_label.cget("text")
         if not text.startswith("https://"):
             return
+        url = text.split()[0]
         self.root.clipboard_clear()
-        self.root.clipboard_append(text)
+        self.root.clipboard_append(url)
         self.hint_label.config(text="Address copied to clipboard.")
+
+    def on_copy_browser_address(self, event=None):
+        text = self.browser_address_label.cget("text")
+        if not text.startswith("http://"):
+            return
+        url = text.split()[0]
+        self.root.clipboard_clear()
+        self.root.clipboard_append(url)
+        self.hint_label.config(text="Browser address copied to clipboard.")
 
     def on_randomize_pin(self):
         self.pin_var.set(f"{secrets.randbelow(1000000):06d}")
