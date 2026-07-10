@@ -352,6 +352,32 @@ removed since Windows' WebDAV client turned out to be unreliable across
 different PCs, and the built-in browser above covers the same
 download/upload/browse workflow directly.)
 
+## Browse another PC
+
+Any PC running PC Bridge is also something *another* PC running PC
+Bridge can browse -- click **Browse a PC...** (its own section in the
+window, or the tray menu) to navigate, download from, and upload to a
+different PC's shared folder, the same two-way browser as "Browse
+phone" above, just pointed at another computer instead of a phone.
+
+**Adding a PC:** click **Browse a PC...** -> **+ Add new PC** -> type a
+name, that PC's address:port and PIN (both shown in its own window, next
+to "phone/PC apps" in the address line) -> **Connect**. Unlike phones,
+PCs don't currently register with each other automatically -- there's no
+reciprocal "Allow browsing from PC" toggle to turn on, so adding one PC
+to another always needs this one manual step, on both sides if you want
+to browse in either direction. Once added, it's remembered in `pcs.json`
+(gitignored, same as `phones.json`) and just shows up next time you open
+**Browse a PC...** -- clicking its name goes straight into the browser
+(there's no separate "choose files/folder to push" step like with a
+phone, since uploading to a PC always targets a specific folder, which
+only the browser itself gives you).
+
+**Security:** same trust-on-first-use model as everywhere else in the
+app -- the PC you're browsing *from* pins the other PC's certificate
+fingerprint the first time it connects, via the exact same pinned-HTTPS
++ PIN connection "Send to Phone" and "Browse phone" already use.
+
 ## Auto-start at login
 
 Not set up by default (you asked for manual start). If you change your

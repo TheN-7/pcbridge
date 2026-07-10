@@ -721,6 +721,189 @@ def rename_on_phone(phone: dict, path: str, new_name: str) -> None:
         conn.close()
 
 
+# ---------- browse another PC ----------
+#
+# Every PC running this app already runs server.py, which serves its
+# whole shared folder over the exact same pinned-HTTPS + PIN model used
+# for phones (/api/list, /api/download, /api/upload, /api/whoami -- see
+# server.py). That means browsing *another* PC doesn't need a separate
+# protocol invented for it: _connect_phone_any (despite the name, it just
+# takes any dict with "addresses"/"pin"/"cert_fingerprint" -- nothing in
+# it is actually phone-specific) already does the right thing pointed at
+# a pcs.json entry instead of a phones.json one. Only the endpoint paths
+# and a couple of response shapes differ from the phone's ReceiveServer,
+# which is what the functions below account for.
+#
+# Known PCs live in pcs.json (gitignored, like phones.json): a list of
+# {"id", "name", "address", "addresses", "pin", "cert_fingerprint"} --
+# same shape as a phones.json entry. Unlike phones, PCs don't currently
+# auto-register with each other (see pcbridge-reciprocal-pairing for how
+# phones do) -- add one PC to another the same manual way "Add Phone"
+# works: address:port + PIN from the other PC's window.
+
+PCS_PATH = app_dir() / "pcs.json"
+
+
+def load_pcs() -> list:
+    if PCS_PATH.exists():
+        try:
+            return json.loads(PCS_PATH.read_text())
+        except Exception:
+            pass
+    return []
+
+
+def save_pcs(pcs: list):
+    PCS_PATH.write_text(json.dumps(pcs, indent=2))
+
+
+def connect_and_learn_fingerprint_pc(address: str, pin: str) -> str:
+    """Like connect_and_learn_fingerprint, but verifies the PIN against
+    another PC's /api/whoami instead of a phone's /api/ping -- a PC's own
+    /api/ping is deliberately unauthenticated (see server.py's ping()
+    docstring), so it can't be used to check whether the PIN you typed is
+    actually correct the way the phone version's /api/ping check does."""
+    conn, fingerprint = _connect_phone(address)
+    try:
+        query = urllib.parse.urlencode({"pin": pin})
+        conn.request("GET", f"/api/whoami?{query}")
+        resp = conn.getresponse()
+        resp.read()
+        if resp.status == 401:
+            raise RuntimeError("That PIN was rejected by the PC.")
+        if resp.status != 200:
+            raise RuntimeError(f"PC returned status {resp.status}.")
+    finally:
+        conn.close()
+    return fingerprint
+
+
+def ping_pc(pc: dict) -> bool:
+    """Like ping_phone, but for the PC list's online/offline dot. A PC's
+    /api/ping needs no PIN at all (see server.py) -- this only confirms
+    the address is reachable and presents the certificate fingerprint
+    already pinned for it; the PIN itself is only actually checked the
+    next time you browse into it for real."""
+    try:
+        conn, _fp = _connect_phone_any(pc, timeout=8)
+    except Exception:
+        return False
+    try:
+        conn.request("GET", "/api/ping")
+        resp = conn.getresponse()
+        resp.read()
+        return resp.status == 200
+    except Exception:
+        return False
+    finally:
+        conn.close()
+
+
+def _pc_error(body: bytes, status: int) -> str:
+    """Like _phone_error, but for another PC's server.py responses --
+    FastAPI's HTTPException defaults to {"detail": ...}, not the phone
+    ReceiveServer's {"error": ...}."""
+    try:
+        message = json.loads(body.decode("utf-8")).get("detail", "")
+    except Exception:
+        message = ""
+    return message or f"PC returned status {status}."
+
+
+def list_pc_dir(pc: dict, path: str = "") -> dict:
+    conn, _fp = _connect_phone_any(pc, timeout=15)
+    try:
+        query = urllib.parse.urlencode({"pin": pc["pin"], "path": path})
+        conn.request("GET", f"/api/list?{query}")
+        resp = conn.getresponse()
+        body = resp.read()
+        if resp.status != 200:
+            raise RuntimeError(_pc_error(body, resp.status))
+        return json.loads(body.decode("utf-8"))
+    finally:
+        conn.close()
+
+
+def download_file_from_pc(pc: dict, remote_path: str, dest_path: Path, on_progress=None):
+    conn, _fp = _connect_phone_any(pc, timeout=30)
+    try:
+        query = urllib.parse.urlencode({"pin": pc["pin"], "path": remote_path})
+        conn.request("GET", f"/api/download?{query}")
+        resp = conn.getresponse()
+        if resp.status != 200:
+            raise RuntimeError(_pc_error(resp.read(), resp.status))
+        total = int(resp.getheader("Content-Length") or 0)
+        dest_path.parent.mkdir(parents=True, exist_ok=True)
+        received = 0
+        with open(dest_path, "wb") as f:
+            while True:
+                chunk = resp.read(256 * 1024)
+                if not chunk:
+                    break
+                f.write(chunk)
+                received += len(chunk)
+                if on_progress:
+                    on_progress(received, total)
+    finally:
+        conn.close()
+
+
+def upload_file_to_pc(pc: dict, local_path: Path, remote_dir: str, on_progress=None):
+    """Uploads one file to another PC's own /api/upload. Unlike the
+    phone's receive endpoint (a raw octet-stream body -- see
+    upload_file_to_phone), server.py's /api/upload is a real FastAPI
+    multipart/form-data endpoint (a "path" form field plus a "files" file
+    field), since that's also what the browser-based PWA uploader posts
+    to it. Built by hand here rather than pulling in a multipart-encoding
+    dependency just for this one call site."""
+    conn, _fp = _connect_phone_any(pc, timeout=30)
+    try:
+        boundary = f"----pcbridge{secrets.token_hex(16)}"
+        # A stray quote in the filename would corrupt the header line --
+        # swapped for an apostrophe rather than trying to properly escape
+        # it, since a corrupted-but-harmless filename is a much smaller
+        # problem than a malformed multipart request.
+        filename = local_path.name.replace('"', "'")
+        pre = (
+            f"--{boundary}\r\n"
+            f'Content-Disposition: form-data; name="path"\r\n\r\n'
+            f"{remote_dir}\r\n"
+            f"--{boundary}\r\n"
+            f'Content-Disposition: form-data; name="files"; filename="{filename}"\r\n'
+            f"Content-Type: application/octet-stream\r\n\r\n"
+        ).encode("utf-8")
+        post = f"\r\n--{boundary}--\r\n".encode("utf-8")
+        size = local_path.stat().st_size
+
+        query = urllib.parse.urlencode({"pin": pc["pin"]})
+        conn.putrequest("POST", f"/api/upload?{query}")
+        conn.putheader("Content-Type", f"multipart/form-data; boundary={boundary}")
+        conn.putheader("Content-Length", str(len(pre) + size + len(post)))
+        conn.endheaders()
+        conn.send(pre)
+
+        sent = 0
+        with open(local_path, "rb") as f:
+            while True:
+                chunk = f.read(256 * 1024)
+                if not chunk:
+                    break
+                conn.send(chunk)
+                sent += len(chunk)
+                if on_progress:
+                    on_progress(sent, size)
+        conn.send(post)
+
+        resp = conn.getresponse()
+        body = resp.read()
+        if resp.status == 401:
+            raise RuntimeError("The PC rejected the PIN.")
+        if resp.status != 200:
+            raise RuntimeError(_pc_error(body, resp.status))
+    finally:
+        conn.close()
+
+
 def _fmt_bytes(n) -> str:
     units = ["B", "KB", "MB", "GB", "TB"]
     i = 0
@@ -745,7 +928,9 @@ def build_tray_image():
         return Image.new("RGB", (64, 64), BLUE)
 
 
-def build_tray_icon(on_open, on_toggle, on_send_to_phone, on_check_updates, on_quit):
+def build_tray_icon(
+    on_open, on_toggle, on_send_to_phone, on_browse_pc, on_check_updates, on_quit
+):
     import pystray
 
     return pystray.Icon(
@@ -759,6 +944,7 @@ def build_tray_icon(on_open, on_toggle, on_send_to_phone, on_check_updates, on_q
                 on_toggle,
             ),
             pystray.MenuItem("Send to Phone...", on_send_to_phone),
+            pystray.MenuItem("Browse a PC...", on_browse_pc),
             pystray.MenuItem("Check for updates", on_check_updates),
             pystray.Menu.SEPARATOR,
             pystray.MenuItem("Quit", on_quit),
@@ -785,7 +971,7 @@ class App:
         self._build_ui()
         self.icon = build_tray_icon(
             self.on_tray_open, self.on_tray_toggle, self.on_tray_send_to_phone,
-            self.on_tray_check_updates, self.on_quit
+            self.on_tray_browse_pc, self.on_tray_check_updates, self.on_quit
         )
         threading.Thread(target=self.icon.run, daemon=True).start()
 
@@ -937,6 +1123,21 @@ class App:
         ).pack(anchor="w", padx=12, pady=(0, 8))
         tk.Button(
             send_frame, text="Send to Phone...", command=self.on_send_to_phone,
+            bg=BORDER, fg=TEXT, activebackground=BORDER, activeforeground=TEXT,
+            relief="flat", font=("Segoe UI", 9),
+        ).pack(anchor="w", padx=12, pady=(0, 12))
+
+        pc_frame = self._section(self.root)
+        tk.Label(
+            pc_frame, text="Browse another PC", bg=CARD, fg=MUTED, font=("Segoe UI", 9)
+        ).pack(anchor="w", padx=12, pady=(12, 2))
+        tk.Label(
+            pc_frame,
+            text="Browse, download from, and upload to another PC running PC Bridge.",
+            bg=CARD, fg=MUTED, font=("Segoe UI", 8), wraplength=280, justify="left",
+        ).pack(anchor="w", padx=12, pady=(0, 8))
+        tk.Button(
+            pc_frame, text="Browse a PC...", command=self.on_browse_pc,
             bg=BORDER, fg=TEXT, activebackground=BORDER, activeforeground=TEXT,
             relief="flat", font=("Segoe UI", 9),
         ).pack(anchor="w", padx=12, pady=(0, 12))
@@ -1297,21 +1498,220 @@ class App:
             relief="flat", font=("Segoe UI", 10), padx=10, pady=8,
         ).pack(fill="x", padx=16, pady=(0, 16))
 
+    # ---- browse a pc ----
+
+    def on_browse_pc(self):
+        self._show_pc_picker(load_pcs())
+
+    def _show_pc_picker(self, pcs: list):
+        dialog = self._dialog("Browse a PC")
+
+        tk.Label(
+            dialog, text="Browse which PC?", bg=BG, fg=TEXT, font=("Segoe UI", 11, "bold")
+        ).pack(anchor="w", padx=16, pady=(16, 8))
+
+        if not pcs:
+            tk.Label(
+                dialog, text="No PCs added yet.", bg=BG, fg=MUTED, font=("Segoe UI", 9)
+            ).pack(anchor="w", padx=16, pady=(0, 8))
+
+        # Same pattern as _show_phone_picker's status_dots -- pinging every
+        # known PC on a background thread so the dialog opens instantly.
+        status_dots = {}
+
+        def remove_pc(p):
+            if not messagebox.askyesno(
+                "PC Bridge",
+                f"Remove \"{p['name']}\"? You'll need to add it again (address, "
+                "PIN, and re-verify its certificate) to browse it later.",
+            ):
+                return
+            remaining = [pc for pc in load_pcs() if pc["id"] != p["id"]]
+            save_pcs(remaining)
+            dialog.destroy()
+            self._show_pc_picker(remaining)
+
+        for pc in pcs:
+            row = tk.Frame(dialog, bg=CARD, highlightbackground=BORDER, highlightthickness=1)
+            row.pack(fill="x", padx=16, pady=(0, 6))
+
+            # Unlike a phone (which offers Choose files/Choose a folder/
+            # Browse phone), a PC has no separate "blind push" endpoint --
+            # uploading always targets a specific folder, which only the
+            # browser itself provides -- so clicking a PC goes straight
+            # into _show_pc_browser instead of an intermediate picker.
+            tk.Button(
+                row, text=pc["name"], anchor="w",
+                command=lambda p=pc: (dialog.destroy(), self._show_pc_browser(p)),
+                bg=CARD, fg=TEXT, activebackground=BORDER, activeforeground=TEXT,
+                relief="flat", font=("Segoe UI", 10), padx=10, pady=8,
+            ).pack(side="left", fill="x", expand=True)
+
+            tk.Button(
+                row, text="✕", command=lambda p=pc: remove_pc(p),
+                bg=CARD, fg=MUTED, activebackground=BORDER, activeforeground=RED,
+                relief="flat", font=("Segoe UI", 10), padx=8, pady=8, bd=0,
+            ).pack(side="right")
+
+            dot = tk.Label(row, text="●", bg=CARD, fg=MUTED, font=("Segoe UI", 10))
+            dot.pack(side="right", padx=(0, 4))
+            status_dots[pc["id"]] = dot
+
+        tk.Button(
+            dialog, text="+ Add new PC", anchor="w",
+            command=lambda: (dialog.destroy(), self._show_add_pc_dialog()),
+            bg=BG, fg=BLUE, activebackground=BG, activeforeground=BLUE,
+            relief="flat", font=("Segoe UI", 10, "underline"), padx=10, pady=8,
+        ).pack(fill="x", padx=16, pady=(0, 6))
+
+        tk.Button(
+            dialog, text="Cancel", command=dialog.destroy,
+            bg=BG, fg=MUTED, activebackground=BG, activeforeground=MUTED,
+            relief="flat", font=("Segoe UI", 9),
+        ).pack(anchor="e", padx=16, pady=(4, 16))
+
+        def ping_worker():
+            for pc in pcs:
+                online = ping_pc(pc)
+
+                def update(p=pc, ok=online):
+                    dot = status_dots.get(p["id"])
+                    if dot is not None and dot.winfo_exists():
+                        dot.config(fg=GREEN if ok else RED)
+
+                self.root.after(0, update)
+
+        threading.Thread(target=ping_worker, daemon=True).start()
+
+    def _show_add_pc_dialog(self):
+        dialog = self._dialog("Add PC")
+
+        def labeled_entry(label_text):
+            tk.Label(dialog, text=label_text, bg=BG, fg=MUTED, font=("Segoe UI", 9)).pack(
+                anchor="w", padx=16, pady=(12, 2)
+            )
+            var = tk.StringVar()
+            tk.Entry(
+                dialog, textvariable=var, bg=CARD, fg=TEXT, insertbackground=TEXT,
+                relief="flat", font=("Segoe UI", 10), width=32,
+            ).pack(fill="x", padx=16, ipady=4)
+            return var
+
+        name_var = labeled_entry("Name (e.g. Florind's Laptop)")
+        address_var = labeled_entry("Address:port (from that PC's window)")
+        pin_var = labeled_entry("PIN (from that PC's window)")
+
+        status_label = tk.Label(
+            dialog, text="", bg=BG, fg=RED, font=("Segoe UI", 9), wraplength=280, justify="left"
+        )
+        status_label.pack(anchor="w", padx=16, pady=(8, 0))
+
+        def do_connect():
+            name = name_var.get().strip()
+            address = address_var.get().strip()
+            pin = pin_var.get().strip()
+            if not name or not address or not pin:
+                status_label.config(text="Fill in all three fields.")
+                return
+            connect_btn.config(state="disabled", text="Connecting...")
+            status_label.config(text="")
+
+            def worker():
+                try:
+                    fingerprint = connect_and_learn_fingerprint_pc(address, pin)
+                except Exception as e:
+                    message = str(e) or f"{type(e).__name__} (no further details)"
+                    self.root.after(0, lambda: (
+                        connect_btn.config(state="normal", text="Connect"),
+                        status_label.config(text=message),
+                    ))
+                    return
+
+                def on_success():
+                    pcs = load_pcs()
+                    pc = {
+                        "id": secrets.token_hex(8),
+                        "name": name,
+                        "address": address,
+                        "addresses": [address],
+                        "pin": pin,
+                        "cert_fingerprint": fingerprint,
+                    }
+                    pcs.append(pc)
+                    save_pcs(pcs)
+                    dialog.destroy()
+                    self._show_pc_browser(pc)
+
+                self.root.after(0, on_success)
+
+            threading.Thread(target=worker, daemon=True).start()
+
+        connect_btn = tk.Button(
+            dialog, text="Connect", command=do_connect,
+            bg=BLUE, fg=ON_BLUE, activebackground=BLUE, activeforeground=ON_BLUE,
+            relief="flat", font=("Segoe UI", 10, "bold"), padx=10, pady=6,
+        )
+        connect_btn.pack(anchor="w", padx=16, pady=(12, 16))
+
     # ---- browse phone ----
 
     def _show_phone_browser(self, phone: dict):
-        """A two-way file browser for one phone's full filesystem -- needs
-        that phone to have granted itself "All files access" (see
-        pcbridge-android's DeviceSidebar); if it hasn't, every action below
-        just surfaces that server's own explanation instead of failing
-        mysteriously.
+        """Opens the shared two-way browser (see _show_remote_browser)
+        pointed at one phone's full filesystem -- needs that phone to have
+        granted itself "All files access" (see pcbridge-android's
+        DeviceSidebar); if it hasn't, every action in the dialog surfaces
+        that server's own explanation instead of failing mysteriously."""
+        self._show_remote_browser(
+            dialog_title=f"Browse {phone['name']}",
+            icon="\U0001F4F1",
+            display_name=phone["name"],
+            subtitle="Browse, download, and upload files on this phone.",
+            list_dir=lambda path: list_phone_dir(phone, path),
+            download_file=lambda remote_path, dest_path, on_progress=None: (
+                download_file_from_phone(phone, remote_path, dest_path, on_progress)
+            ),
+            upload_file=lambda local_path, remote_dir, on_progress=None: (
+                upload_file_to_phone(phone, local_path, remote_dir, on_progress)
+            ),
+        )
+
+    def _show_pc_browser(self, pc: dict):
+        """Opens the same shared browser (see _show_remote_browser)
+        pointed at another PC running PC Bridge -- reuses
+        _connect_phone_any's TOFU-pinned HTTPS + PIN connection exactly
+        like a phone, just calling server.py's plain /api/list,
+        /api/download, /api/upload instead of a phone's /api/browse/* --
+        see list_pc_dir/download_file_from_pc/upload_file_to_pc above."""
+        self._show_remote_browser(
+            dialog_title=f"Browse {pc['name']}",
+            icon="\U0001F5A5",
+            display_name=pc["name"],
+            subtitle="Browse, download, and upload files on this PC.",
+            list_dir=lambda path: list_pc_dir(pc, path),
+            download_file=lambda remote_path, dest_path, on_progress=None: (
+                download_file_from_pc(pc, remote_path, dest_path, on_progress)
+            ),
+            upload_file=lambda local_path, remote_dir, on_progress=None: (
+                upload_file_to_pc(pc, local_path, remote_dir, on_progress)
+            ),
+        )
+
+    def _show_remote_browser(self, *, dialog_title, icon, display_name, subtitle,
+                              list_dir, download_file, upload_file):
+        """The actual two-way file browser dialog -- shared by
+        _show_phone_browser and _show_pc_browser, both of which are thin
+        wrappers around this. Everything below is backend-agnostic, driven
+        entirely through the three functions passed in:
+          list_dir(path) -> {"path", "parent", "entries"}
+          download_file(remote_path, dest_path, on_progress=None)
+          upload_file(local_path, remote_dir, on_progress=None)
 
         Uses a ttk.Treeview (see _configure_ttk_style) instead of a plain
         Listbox -- gives native multi-select, per-row icons (a Unicode
         glyph prefix, guessed from extension -- no image assets to bundle
         or package), and Size/Modified columns for free, plus a clickable
         breadcrumb path bar instead of a raw "/a/b/c" label."""
-        dialog = self._dialog(f"Browse {phone['name']}")
+        dialog = self._dialog(dialog_title)
         dialog.resizable(True, True)
         dialog.geometry("680x560")
         dialog.minsize(520, 420)
@@ -1332,11 +1732,11 @@ class App:
         title_col = tk.Frame(header_row, bg=BG)
         title_col.pack(side="left")
         tk.Label(
-            title_col, text=f"\U0001F4F1  {phone['name']}", bg=BG, fg=TEXT,
+            title_col, text=f"{icon}  {display_name}", bg=BG, fg=TEXT,
             font=("Segoe UI", 13, "bold"),
         ).pack(anchor="w")
         tk.Label(
-            title_col, text="Browse, download, and upload files on this phone.",
+            title_col, text=subtitle,
             bg=BG, fg=MUTED, font=("Segoe UI", 9),
         ).pack(anchor="w", pady=(2, 0))
 
@@ -1447,7 +1847,7 @@ class App:
 
             def worker():
                 try:
-                    result = list_phone_dir(phone, state["path"])
+                    result = list_dir(state["path"])
                 except Exception as e:
                     self.root.after(0, lambda: status_label.config(text=str(e), fg=RED))
                     return
@@ -1529,15 +1929,18 @@ class App:
                 downloaded = 0
 
                 def download_dir(remote_path: str, local_dir: Path):
-                    """Recursively mirrors one phone folder into local_dir --
-                    walks it via repeated list_phone_dir calls (the phone's
-                    browse API has no zip/bulk endpoint like server.py's own
-                    /api/download-zip, so this just does it one file at a
-                    time, to any depth). download_file_from_phone already
-                    creates local_dir's parent as needed."""
+                    """Recursively mirrors one remote folder into local_dir
+                    -- walks it via repeated list_dir calls one file at a
+                    time, to any depth, rather than a bulk/zip endpoint.
+                    Not every backend has one (the phone's browse API
+                    doesn't), and going file-by-file keeps behavior
+                    identical between phones and PCs and lets partial
+                    failures be reported individually instead of failing
+                    an entire folder. download_file already creates
+                    local_dir's parent as needed."""
                     nonlocal downloaded
                     try:
-                        result = list_phone_dir(phone, remote_path)
+                        result = list_dir(remote_path)
                     except Exception as e:
                         failed.append((remote_path, str(e)))
                         return
@@ -1547,7 +1950,7 @@ class App:
                             download_dir(child_remote, local_dir / child["name"])
                         else:
                             try:
-                                download_file_from_phone(phone, child_remote, local_dir / child["name"])
+                                download_file(child_remote, local_dir / child["name"])
                                 downloaded += 1
                             except Exception as e:
                                 failed.append((child_remote, str(e)))
@@ -1558,7 +1961,7 @@ class App:
                         download_dir(remote_path, Path(dest_dir) / entry["name"])
                     else:
                         try:
-                            download_file_from_phone(phone, remote_path, Path(dest_dir) / entry["name"])
+                            download_file(remote_path, Path(dest_dir) / entry["name"])
                             downloaded += 1
                         except Exception as e:
                             failed.append((entry["name"], str(e)))
@@ -1591,7 +1994,7 @@ class App:
                     subdir = rel_path.rsplit("/", 1)[0] if "/" in rel_path else ""
                     remote_dir = f"{state['path']}/{subdir}" if state["path"] and subdir else (subdir or state["path"])
                     try:
-                        upload_file_to_phone(phone, local_path, remote_dir)
+                        upload_file(local_path, remote_dir)
                         sent += 1
                     except Exception as e:
                         failed.append((rel_path, str(e)))
@@ -1868,6 +2271,9 @@ class App:
 
     def on_tray_send_to_phone(self, icon=None, item=None):
         self.root.after(0, lambda: (self.show_window(), self.on_send_to_phone()))
+
+    def on_tray_browse_pc(self, icon=None, item=None):
+        self.root.after(0, lambda: (self.show_window(), self.on_browse_pc()))
 
     def on_quit(self, icon=None, item=None):
         def _quit():
