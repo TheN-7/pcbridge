@@ -323,8 +323,8 @@ Beyond one-shot "push these files" sends, **Browse phone...** (the third
 button after **Choose files...**/**Choose a folder...**) opens a two-way
 file browser over the phone's *entire* filesystem -- navigate into any
 folder (double-click to open, ".." to go up), download one or more
-selected files to a folder you pick, or upload files/a whole folder
-straight into whatever folder you're currently looking at.
+selected files or folders to a folder you pick, or upload files/a whole
+folder straight into whatever folder you're currently looking at.
 
 This needs the phone to have granted itself **All files access** first
 (the sidebar's "Browse this phone" section, under "Receive from PC") --
@@ -337,24 +337,20 @@ same PIN-checked, certificate-pinned connection as the rest of "Send to
 Phone" underneath it, just reaching further than the phone's Downloads
 folder.
 
-**Opens as a real Explorer window, not a custom dialog.** Clicking
-**Browse phone...** first tries to map the phone as an actual network
-drive and open it in Windows Explorer, using a small WebDAV bridge this
-app runs on `127.0.0.1` (loopback only -- never reachable from your
-network) that translates Explorer's requests into calls against the
-phone's own browse API. If that mapping fails for any reason -- most
-commonly because Windows' built-in WebDAV client (the "WebClient"
-service) is disabled, which is common on a fresh Windows install since
-it's Manual-start by default -- you'll be offered the original built-in
-browser dialog (the two-way file list described above) as a fallback
-instead, so "Browse phone..." never becomes a dead end. If Explorer
-opens but drag/drop or renaming inside it acts oddly, that's Windows'
-own WebDAV client being picky (it has a real-world reputation for this,
-independent of anything this app does) -- the fallback dialog is always
-available as a reliable alternative via the same button if you ever want
-it. This drive-mapping path hasn't been exercised against a real copy of
-Windows Explorer during development; if it doesn't work well on your
-machine, it's worth reporting back what happened.
+**Opens the built-in browser window.** The list shows icons per file
+type, Size/Modified columns, and a clickable breadcrumb path bar. Select
+one or more files *or folders* (click, or Ctrl/Shift-click for multiple --
+mixing files and folders in the same selection is fine) and use
+**Download selected**: a selected folder is downloaded recursively,
+mirroring its structure into the destination folder you pick, so grabbing
+a whole album or project folder doesn't mean picking dozens of files by
+hand. **Upload files...**/**Upload folder...** push something from the PC
+into whatever folder you're currently looking at. (An earlier version of
+this feature tried to map the phone as a real
+Windows Explorer network drive via a local WebDAV bridge; that path was
+removed since Windows' WebDAV client turned out to be unreliable across
+different PCs, and the built-in browser above covers the same
+download/upload/browse workflow directly.)
 
 ## Auto-start at login
 
