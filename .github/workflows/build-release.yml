@@ -1,4 +1,4 @@
-name: Build and release PCBridge.exe
+name: Build and release PC Bridge
 
 # Push a version tag (e.g. `git tag v1.2.0 && git push origin v1.2.0`) to
 # trigger this. It builds PCBridge.exe on a real Windows runner and
@@ -23,6 +23,14 @@ name: Build and release PCBridge.exe
 # already running who just needs auto-update to fetch a fresh copy
 # (auto-update always looks for an asset literally named
 # "PCBridge.exe" -- don't rename that one).
+#
+# A second job, build-deb, builds a Linux pcbridge_<version>_amd64.deb
+# on a real Ubuntu runner and attaches it to the same Release -- see
+# that job's own comments for the Linux-specific packaging decisions
+# (why it doesn't use actions/setup-python, why it deliberately doesn't
+# try to bundle a GTK/AppIndicator tray icon, why auto-update behaves
+# differently there). It runs after the Windows job (needs: build) so
+# there's only ever one process creating the Release itself.
 
 on:
   push:
@@ -87,3 +95,110 @@ jobs:
             dist/PCBridge.exe
             installer/installer_output/PCBridge-Setup.exe
           generate_release_notes: true
+
+  build-deb:
+    needs: build
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install system Python's Tk bindings
+        # Deliberately *not* using actions/setup-python here, unlike the
+        # Windows job -- it provisions its own separate prebuilt CPython,
+        # and `apt install python3-tk` only wires Tcl/Tk into the
+        # runner's *system* python3. tkinter isn't a pip-installable
+        # package, so if PyInstaller ran under actions/setup-python's
+        # interpreter instead, it would have no way to see or bundle it
+        # at all. Using the runner's own system python3 for every step
+        # in this job keeps pip, PyInstaller, and the interpreter
+        # tkinter is actually bundled into all pointed at the same
+        # place.
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y python3-tk python3-venv python3-pip
+
+      - name: Install dependencies
+        run: |
+          python3 -m pip install --upgrade pip
+          pip install -r requirements.txt
+          pip install pyinstaller
+
+      - name: Get version number from the tag (strip leading 'v')
+        id: version
+        run: echo "number=${GITHUB_REF_NAME#v}" >> "$GITHUB_OUTPUT"
+
+      - name: Bake update credentials into the build
+        run: |
+          cat > update_secrets.py << EOF
+          UPDATE_REPO = "${{ github.repository }}"
+          UPDATE_TOKEN = "${{ secrets.UPDATE_TOKEN }}"
+          EOF
+
+      - name: Bake version into the build
+        run: |
+          cat > app_version.py << EOF
+          APP_VERSION = "${{ steps.version.outputs.number }}"
+          EOF
+
+      - name: Build the pcbridge Linux binary
+        # No --windowed/--icon here -- both are Windows/macOS-only
+        # PyInstaller options and no-ops on Linux. The app's icon
+        # instead comes from the .desktop entry + a bundled pixmap
+        # below (the normal Linux convention -- Linux binaries don't
+        # carry an embedded icon the way .exe files do).
+        #
+        # Also deliberately not installing any GTK/AppIndicator system
+        # libraries anywhere in this job. pystray would use them for a
+        # native-looking tray icon on GNOME/KDE if they were bundleable,
+        # but PyGObject's GObject-Introspection typelibs are a well-known
+        # rough edge for PyInstaller -- they don't freeze into a onefile
+        # binary reliably, no flag fixes that. Leaving those libs absent
+        # here means PyInstaller can only find pystray's *other* Linux
+        # backend -- the Xorg one, pure ctypes bindings to libX11 via the
+        # python-xlib package (already pulled in by requirements.txt's
+        # pystray dependency on Linux) -- which bundles cleanly since
+        # it's pure Python. Less native-looking on GNOME than an
+        # AppIndicator tray icon, but it actually works, which a
+        # half-bundled GTK backend would not. See
+        # pcbridge-linux-deb-packaging memory for the full reasoning.
+        run: python3 -m PyInstaller --onefile --name pcbridge --add-data "static:static" pcbridge_app.py
+
+      - name: Assemble the .deb package tree
+        run: |
+          VERSION="${{ steps.version.outputs.number }}"
+          PKGDIR="packaging/debian/build/pcbridge_${VERSION}_amd64"
+          mkdir -p "$PKGDIR/DEBIAN" "$PKGDIR/usr/bin" \
+                   "$PKGDIR/usr/share/applications" \
+                   "$PKGDIR/usr/share/icons/hicolor/512x512/apps"
+
+          install -m 755 dist/pcbridge "$PKGDIR/usr/bin/pcbridge"
+          install -m 644 packaging/debian/pcbridge.desktop "$PKGDIR/usr/share/applications/pcbridge.desktop"
+          install -m 644 static/icons/icon-512.png "$PKGDIR/usr/share/icons/hicolor/512x512/apps/pcbridge.png"
+          install -m 755 packaging/debian/postinst "$PKGDIR/DEBIAN/postinst"
+          install -m 755 packaging/debian/postrm "$PKGDIR/DEBIAN/postrm"
+
+          INSTALLED_SIZE=$(du -sk "$PKGDIR/usr" | cut -f1)
+          cat > "$PKGDIR/DEBIAN/control" << EOF
+          Package: pcbridge
+          Version: ${VERSION}
+          Section: net
+          Priority: optional
+          Architecture: amd64
+          Installed-Size: ${INSTALLED_SIZE}
+          Depends: libc6, libx11-6
+          Maintainer: Florind <florindmurtezi88@gmail.com>
+          Homepage: https://github.com/${{ github.repository }}
+          Description: Transfer and browse files between your phone and PC
+           PC Bridge lets you browse, upload, and download files between
+           your phone and PC (or between two PCs) over your local
+           network, with a small system tray app for starting/stopping
+           the server and managing paired devices.
+          EOF
+
+          dpkg-deb --build --root-owner-group "$PKGDIR" "packaging/debian/pcbridge_${VERSION}_amd64.deb"
+
+      - name: Publish to the GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: packaging/debian/pcbridge_*.deb

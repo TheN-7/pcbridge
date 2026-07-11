@@ -29,17 +29,31 @@ BASE_DIR = Path(__file__).resolve().parent
 
 
 def app_dir() -> Path:
-    """Where config.json should live.
+    """Where config.json (and friends) should live. Mirrors
+    pcbridge_app.py's app_dir() exactly -- see that one for the full
+    reasoning; both need to agree since pcbridge_app.py's ServerProcess
+    relaunches the same frozen binary as a `--server` subprocess that
+    imports and calls this module's run() directly.
 
     Normally this is just BASE_DIR (next to this script). But when this
-    server is launched from inside a PyInstaller-frozen EXE (see
-    pcbridge_app.py --server), __file__ points into a temporary
-    extraction folder that gets deleted after the process exits -- if
-    config.json lived there, the PIN/folder settings would silently reset
-    every single run. sys.executable, on the other hand, is the real path
-    to the running EXE, so config.json ends up next to it and survives.
+    server is launched from inside a PyInstaller-frozen EXE, __file__
+    points into a temporary extraction folder that gets deleted after
+    the process exits -- if config.json lived there, the PIN/folder
+    settings would silently reset every single run. sys.executable, on
+    the other hand, is the real path to the running EXE.
+
+    On Windows that's enough on its own (see pcbridge_app.py's app_dir()
+    docstring for why that's always writable there). On Linux, a .deb
+    install puts the frozen binary at /usr/bin/pcbridge -- root-owned,
+    not writable -- so this uses the standard per-user XDG config
+    directory instead once frozen there.
     """
     if getattr(sys, "frozen", False):
+        if sys.platform.startswith("linux"):
+            base = Path(os.environ.get("XDG_CONFIG_HOME") or (Path.home() / ".config"))
+            linux_dir = base / "pcbridge"
+            linux_dir.mkdir(parents=True, exist_ok=True)
+            return linux_dir
         return Path(sys.executable).resolve().parent
     return BASE_DIR
 

@@ -36,6 +36,42 @@ wherever you like, no Start Menu entry)? Download `PCBridge.exe`
 directly from the same Release instead of the Setup file -- see
 "Packaging into a single portable PCBridge.exe" below.
 
+### On Linux (Debian/Ubuntu)
+
+Download `pcbridge_<version>_amd64.deb` from the same Releases page and
+install it:
+
+```
+sudo apt install ./pcbridge_<version>_amd64.deb
+```
+
+(`apt install ./...` rather than `dpkg -i` pulls in the couple of
+declared dependencies for you.) This adds a **PC Bridge** entry to your
+application menu and a `pcbridge` command on your `PATH` -- launch
+either one, the same tray-icon window as Windows. Settings/PIN/paired
+devices are stored per-user under `~/.config/pcbridge/` (not next to
+the binary, which lives in the root-owned `/usr/bin/` once installed
+this way).
+
+Two things are genuinely different from the Windows build, both by
+design, not oversight:
+
+- **No auto-update.** Windows can swap its own running exe in place;
+  a `.deb` install can't do that safely, so "Check for updates" on
+  Linux just tells you a newer version exists and points you at the
+  Releases page -- `sudo apt install ./pcbridge_<new-version>_amd64.deb`
+  again to upgrade.
+- **Tray icon backend.** Built without GTK/AppIndicator libraries
+  (they don't freeze cleanly into a single-file binary), so the tray
+  icon uses `pystray`'s plain X11 backend instead of a native-looking
+  AppIndicator one on GNOME/KDE. It should still show up and work on
+  any X11 or XWayland desktop; if it doesn't appear at all on your
+  setup, that's the part most likely to need a follow-up fix.
+
+Built by the same CI pipeline as the Windows installer (see
+`.github/workflows/build-release.yml`'s `build-deb` job) -- there's no
+separate manual packaging step to keep in sync.
+
 ## Running it (no packaging needed)
 
 ```

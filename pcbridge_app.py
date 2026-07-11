@@ -86,10 +86,34 @@ RED = "#f87171"
 
 
 def app_dir() -> Path:
-    """Where config.json lives -- the real EXE folder, not the temp folder
-    a frozen single-file build extracts itself into. Mirrors server.py's
-    app_dir() so both processes agree on where settings are stored."""
+    """Where config.json (and friends -- phones.json, pcs.json, cert.pem,
+    key.pem, pcbridge.log) live. Mirrors server.py's app_dir() exactly --
+    both processes need to agree, since ServerProcess.start() relaunches
+    this same frozen binary as its own `--server` subprocess (see
+    ServerProcess.start()).
+
+    Windows: next to the running exe. True for both a portable
+    PCBridge.exe placed anywhere, and an installed copy, since
+    installer/PCBridge.iss deliberately installs per-user under
+    %LOCALAPPDATA% rather than Program Files, specifically so this stays
+    writable (see that file's own comments).
+
+    Linux: a .deb install puts the frozen binary at /usr/bin/pcbridge --
+    root-owned, not writable at runtime. "Next to the exe" there would
+    mean silently failing to save the PIN, the phone/PC lists, or even
+    the TLS certificate. So once frozen on Linux, this uses the normal
+    per-user XDG config directory instead ($XDG_CONFIG_HOME, or
+    ~/.config as the standard fallback), created on first run.
+
+    Either way, a non-frozen `python pcbridge_app.py` run straight from
+    the repo (any OS) still uses the folder next to this script --
+    unchanged, dev-mode behavior."""
     if getattr(sys, "frozen", False):
+        if sys.platform.startswith("linux"):
+            base = Path(os.environ.get("XDG_CONFIG_HOME") or (Path.home() / ".config"))
+            linux_dir = base / "pcbridge"
+            linux_dir.mkdir(parents=True, exist_ok=True)
+            return linux_dir
         return Path(sys.executable).resolve().parent
     return BASE_DIR
 
@@ -2193,6 +2217,26 @@ class App:
         threading.Thread(target=worker, daemon=True).start()
 
     def _prompt_update(self, latest, repo, token, asset_id, expected_size=0):
+        # The actual swap-the-running-exe dance below (_install_update /
+        # _write_updater_script) is Windows-only -- it downloads
+        # PCBridge.exe and hands off to a generated PowerShell script,
+        # since Windows won't let a running exe overwrite itself. Linux
+        # installs come from a .deb instead (see build-release.yml's
+        # build-deb job), which has its own, completely different update
+        # story (a package manager, not a self-replacing binary) -- so
+        # rather than build a second, parallel Linux updater nobody asked
+        # for, this just points at the Release page to grab manually.
+        # fetch_latest_release/is_newer above this still ran the same on
+        # both platforms, so the notification itself is still accurate.
+        if sys.platform != "win32":
+            messagebox.showinfo(
+                "PC Bridge",
+                f"Version {latest} is available (you have v{APP_VERSION}). "
+                "Auto-update only replaces the file in place on Windows -- "
+                f"grab the new .deb from https://github.com/{repo}/releases "
+                "and install it with your package manager to update.",
+            )
+            return
         if not messagebox.askyesno(
             "PC Bridge",
             f"Version {latest} is available (you have v{APP_VERSION}). "

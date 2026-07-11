@@ -1,0 +1,9 @@
+[Desktop Entry]
+Type=Application
+Name=PC Bridge
+Comment=Transfer and browse files between your phone and PC
+Exec=pcbridge
+Icon=pcbridge
+Categories=Network;FileTransfer;Utility;
+Terminal=false
+StartupWMClass=pcbridge

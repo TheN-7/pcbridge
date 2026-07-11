@@ -8,9 +8,11 @@ __pycache__/
 config.json
 pcbridge.log
 
-# Known phones for "Send to Phone" -- contains real PINs and pinned
-# certificate fingerprints, same rationale as config.json above.
+# Known phones/PCs for "Send to Phone"/"Browse a PC" -- contains real
+# PINs and pinned certificate fingerprints, same rationale as
+# config.json above.
 phones.json
+pcs.json
 
 # Self-signed TLS cert + private key, generated on first run (see
 # ensure_certificate() in server.py). Regenerating a new one is harmless
@@ -41,6 +43,12 @@ icon.ico
 
 # Inno Setup installer output
 installer/installer_output/
+
+# Debian packaging output (see build-release.yml's build-deb job) --
+# the scratch package tree and the built .deb itself, if built locally
+packaging/debian/build/
+packaging/debian/*.deb
+*.deb
 
 # Android / Gradle
 android/.gradle/
