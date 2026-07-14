@@ -952,21 +952,42 @@ def build_tray_image():
         return Image.new("RGB", (64, 64), BLUE)
 
 
+def _import_pystray_linux():
+    """pystray's own appindicator -> gtk -> xorg fallback only catches
+    ImportError, but gi.require_version() raises ValueError when the
+    typelib for an otherwise-importable gi module is missing (e.g.
+    PyGObject installed without the AppIndicator/Ayatana typelib -- a
+    common combo since the typelib is a separate distro package). That
+    ValueError isn't caught, so pystray dies instead of trying the next
+    backend, killing the whole app before the window ever shows.
+
+    Redo that fallback ourselves, forcing each backend via PYSTRAY_BACKEND
+    and catching every exception, so we still get a real (clickable,
+    native-menu) AppIndicator/StatusNotifierItem tray icon on systems that
+    can support one, and only drop to the pure-Python Xorg backend -- which
+    some Wayland compositors only expose through a limited XEmbed
+    compatibility shim with unreliable click handling -- when nothing
+    better is available."""
+    for backend in ("appindicator", "gtk", "xorg"):
+        os.environ["PYSTRAY_BACKEND"] = backend
+        try:
+            import pystray
+
+            return pystray
+        except Exception:
+            sys.modules.pop("pystray", None)
+            for name in [n for n in sys.modules if n.startswith("pystray.")]:
+                sys.modules.pop(name, None)
+    raise ImportError("no usable pystray backend found")
+
+
 def build_tray_icon(
     on_open, on_toggle, on_send_to_phone, on_browse_pc, on_check_updates, on_quit
 ):
     if sys.platform.startswith("linux"):
-        # Force pystray's pure-Python Xorg backend. The .deb build relies on
-        # AppIndicator's GObject-Introspection typelib being absent so
-        # PyInstaller only bundles the Xorg backend, but PyGObject itself
-        # (gi) is present on plenty of end-user systems even without that
-        # typelib -- pystray then tries the AppIndicator backend first,
-        # hits ValueError instead of ImportError, and that isn't caught by
-        # its own backend-fallback logic, killing the whole app before the
-        # window ever shows.
-        os.environ.setdefault("PYSTRAY_BACKEND", "xorg")
-
-    import pystray
+        pystray = _import_pystray_linux()
+    else:
+        import pystray
 
     return pystray.Icon(
         "pcbridge",

@@ -149,19 +149,28 @@ jobs:
         # carry an embedded icon the way .exe files do).
         #
         # Also deliberately not installing any GTK/AppIndicator system
-        # libraries anywhere in this job. pystray would use them for a
-        # native-looking tray icon on GNOME/KDE if they were bundleable,
-        # but PyGObject's GObject-Introspection typelibs are a well-known
-        # rough edge for PyInstaller -- they don't freeze into a onefile
-        # binary reliably, no flag fixes that. Leaving those libs absent
-        # here means PyInstaller can only find pystray's *other* Linux
-        # backend -- the Xorg one, pure ctypes bindings to libX11 via the
-        # python-xlib package (already pulled in by requirements.txt's
-        # pystray dependency on Linux) -- which bundles cleanly since
-        # it's pure Python. Less native-looking on GNOME than an
-        # AppIndicator tray icon, but it actually works, which a
-        # half-bundled GTK backend would not. See
-        # pcbridge-linux-deb-packaging memory for the full reasoning.
+        # libraries anywhere in this job. PyGObject's GObject-Introspection
+        # typelibs are a well-known rough edge for PyInstaller -- they
+        # don't freeze into a onefile binary reliably, no flag fixes that.
+        # Leaving those libs absent here means PyInstaller can only bundle
+        # pystray's pure-Python Linux fallback -- the Xorg backend, ctypes
+        # bindings to libX11 via python-xlib (already pulled in by
+        # requirements.txt's pystray dependency on Linux) -- since it's
+        # pure Python and bundles cleanly.
+        #
+        # At *runtime* (not build time) pcbridge_app.py's
+        # _import_pystray_linux() still tries the appindicator/gtk
+        # backends first, using whatever gi + typelibs happen to be
+        # installed on the end user's system (GObject-Introspection loads
+        # typelibs dynamically from the system at runtime -- nothing to do
+        # with what PyInstaller froze in) -- giving a proper native,
+        # clickable StatusNotifierItem tray icon on GNOME/KDE. The
+        # gir1.2-ayatanaappindicator3-0.1 Recommends below is what makes
+        # that the common case; Xorg (whose XEmbed protocol some Wayland
+        # compositors only expose through a limited, click-unreliable
+        # compatibility shim) remains the safety-net fallback for systems
+        # without it. See pcbridge-linux-deb-packaging memory for the
+        # full reasoning.
         run: python3 -m PyInstaller --onefile --name pcbridge --add-data "static:static" pcbridge_app.py
 
       - name: Assemble the .deb package tree
@@ -187,6 +196,7 @@ jobs:
           Architecture: amd64
           Installed-Size: ${INSTALLED_SIZE}
           Depends: libc6, libx11-6
+          Recommends: gir1.2-ayatanaappindicator3-0.1, gir1.2-gtk-3.0
           Maintainer: Florind <florindmurtezi88@gmail.com>
           Homepage: https://github.com/${{ github.repository }}
           Description: Transfer and browse files between your phone and PC
