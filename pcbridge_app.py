@@ -26,6 +26,7 @@ see the "auto-update" section below and README-DESKTOP.md for how to
 configure and publish releases.
 """
 
+import ctypes
 import hashlib
 import http.client
 import json
@@ -969,28 +970,26 @@ def _import_pystray_linux():
     compatibility shim with unreliable click handling -- when nothing
     better is available.
 
-    The appindicator/gtk attempts also need LD_LIBRARY_PATH restored to
-    its pre-freeze value first. PyInstaller's onefile bootloader points
-    LD_LIBRARY_PATH at its own extraction dir so the frozen exe's bundled
-    .so files resolve first; if any bundled dependency happens to carry a
-    library that shares a name with one of GTK's system dependencies (e.g.
-    libfontconfig, pulled in transitively by another package), the
-    dynamic linker resolves *that* copy instead of the system one GTK was
-    built against, and dlopen(libgtk-3.so.0) dies with an "undefined
-    symbol" error -- indistinguishable, from here, from GTK genuinely
-    being unusable. Restoring the original LD_LIBRARY_PATH (PyInstaller
-    saves it as LD_LIBRARY_PATH_ORIG when it overrides one) for just the
-    gi-based attempts avoids that false negative."""
-    frozen_ld_library_path = os.environ.get("LD_LIBRARY_PATH")
-    unfrozen_ld_library_path = os.environ.get("LD_LIBRARY_PATH_ORIG", "")
+    The appindicator/gtk attempts also need the system's real libfontconfig
+    preloaded first. PyInstaller's onefile bootloader points LD_LIBRARY_PATH
+    at its own extraction dir so the frozen exe's bundled .so files resolve
+    first; if any bundled dependency happens to carry its own libfontconfig
+    (pulled in transitively by another package, e.g. Pillow), the dynamic
+    linker resolves *that* copy -- built against a different fontconfig ABI
+    -- instead of the system one GTK's libpangoft2 needs, and
+    dlopen(libgtk-3.so.0) dies with an "undefined symbol" error --
+    indistinguishable, from here, from GTK genuinely being unusable.
+    Reassigning os.environ["LD_LIBRARY_PATH"] doesn't fix this: glibc's
+    dynamic linker parses that variable once at process start and never
+    re-reads it for later dlopen() calls. What does work: explicitly
+    dlopen() the *system* libfontconfig (located via ldconfig's cache,
+    which reads /etc/ld.so.cache directly and ignores LD_LIBRARY_PATH) with
+    RTLD_GLOBAL before anything imports gi/GTK -- when libpangoft2 is later
+    dlopen'd and needs libfontconfig.so.1, the loader finds a library of
+    that soname already loaded in the process and reuses it instead of
+    searching paths (and finding the bundled one) again."""
+    _preload_system_fontconfig()
     for backend in ("appindicator", "gtk", "xorg"):
-        if backend == "xorg":
-            if frozen_ld_library_path is None:
-                os.environ.pop("LD_LIBRARY_PATH", None)
-            else:
-                os.environ["LD_LIBRARY_PATH"] = frozen_ld_library_path
-        else:
-            os.environ["LD_LIBRARY_PATH"] = unfrozen_ld_library_path
         os.environ["PYSTRAY_BACKEND"] = backend
         try:
             import pystray
@@ -1000,12 +999,21 @@ def _import_pystray_linux():
             sys.modules.pop("pystray", None)
             for name in [n for n in sys.modules if n.startswith("pystray.")]:
                 sys.modules.pop(name, None)
-        finally:
-            if frozen_ld_library_path is None:
-                os.environ.pop("LD_LIBRARY_PATH", None)
-            else:
-                os.environ["LD_LIBRARY_PATH"] = frozen_ld_library_path
     raise ImportError("no usable pystray backend found")
+
+
+def _preload_system_fontconfig():
+    try:
+        listing = subprocess.run(
+            ["ldconfig", "-p"], capture_output=True, text=True, timeout=5
+        ).stdout
+        for line in listing.splitlines():
+            if line.strip().startswith("libfontconfig.so.1") and "=> " in line:
+                path = line.rsplit("=> ", 1)[-1].strip()
+                ctypes.CDLL(path, mode=ctypes.RTLD_GLOBAL)
+                return
+    except Exception:
+        pass
 
 
 def build_tray_icon(
