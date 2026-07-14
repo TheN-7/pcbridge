@@ -955,7 +955,7 @@ def build_tray_image():
 def build_tray_icon(
     on_open, on_toggle, on_send_to_phone, on_browse_pc, on_check_updates, on_quit
 ):
-        if sys.platform.startswith("linux"):
+    if sys.platform.startswith("linux"):
         # Force pystray's pure-Python Xorg backend. The .deb build relies on
         # AppIndicator's GObject-Introspection typelib being absent so
         # PyInstaller only bundles the Xorg backend, but PyGObject itself
