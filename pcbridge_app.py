@@ -967,8 +967,30 @@ def _import_pystray_linux():
     can support one, and only drop to the pure-Python Xorg backend -- which
     some Wayland compositors only expose through a limited XEmbed
     compatibility shim with unreliable click handling -- when nothing
-    better is available."""
+    better is available.
+
+    The appindicator/gtk attempts also need LD_LIBRARY_PATH restored to
+    its pre-freeze value first. PyInstaller's onefile bootloader points
+    LD_LIBRARY_PATH at its own extraction dir so the frozen exe's bundled
+    .so files resolve first; if any bundled dependency happens to carry a
+    library that shares a name with one of GTK's system dependencies (e.g.
+    libfontconfig, pulled in transitively by another package), the
+    dynamic linker resolves *that* copy instead of the system one GTK was
+    built against, and dlopen(libgtk-3.so.0) dies with an "undefined
+    symbol" error -- indistinguishable, from here, from GTK genuinely
+    being unusable. Restoring the original LD_LIBRARY_PATH (PyInstaller
+    saves it as LD_LIBRARY_PATH_ORIG when it overrides one) for just the
+    gi-based attempts avoids that false negative."""
+    frozen_ld_library_path = os.environ.get("LD_LIBRARY_PATH")
+    unfrozen_ld_library_path = os.environ.get("LD_LIBRARY_PATH_ORIG", "")
     for backend in ("appindicator", "gtk", "xorg"):
+        if backend == "xorg":
+            if frozen_ld_library_path is None:
+                os.environ.pop("LD_LIBRARY_PATH", None)
+            else:
+                os.environ["LD_LIBRARY_PATH"] = frozen_ld_library_path
+        else:
+            os.environ["LD_LIBRARY_PATH"] = unfrozen_ld_library_path
         os.environ["PYSTRAY_BACKEND"] = backend
         try:
             import pystray
@@ -978,6 +1000,11 @@ def _import_pystray_linux():
             sys.modules.pop("pystray", None)
             for name in [n for n in sys.modules if n.startswith("pystray.")]:
                 sys.modules.pop(name, None)
+        finally:
+            if frozen_ld_library_path is None:
+                os.environ.pop("LD_LIBRARY_PATH", None)
+            else:
+                os.environ["LD_LIBRARY_PATH"] = frozen_ld_library_path
     raise ImportError("no usable pystray backend found")
 
 
