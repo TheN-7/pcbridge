@@ -51,12 +51,14 @@
     align-items: center;
     gap: 9px;
     border: 1px solid var(--line);
-    background: var(--surface);
+    background: var(--raised-hover);
     border-radius: var(--r);
-    padding: 9px 13px;
+    padding: 10px 14px;
     font-family: var(--mono);
+    font-weight: 600;
     font-size: var(--fs-sm);
     white-space: nowrap;
+    box-shadow: var(--shadow-sm);
   }
 
   .glyph {

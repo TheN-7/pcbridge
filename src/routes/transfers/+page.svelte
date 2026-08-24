@@ -150,8 +150,7 @@
     display: flex;
     flex-direction: column;
     gap: var(--sp-4);
-    padding: var(--sp-5);
-    max-width: 780px;
+    padding: var(--sp-6) var(--sp-5);
   }
 
   .head {
@@ -195,7 +194,10 @@
     border: 1px solid var(--line);
     border-radius: var(--r);
     background: var(--raised);
-    padding: var(--sp-3);
+    backdrop-filter: var(--blur);
+    -webkit-backdrop-filter: var(--blur);
+    box-shadow: var(--shadow-sm);
+    padding: var(--sp-3) var(--sp-4);
     display: flex;
     flex-direction: column;
     gap: var(--sp-2);
@@ -291,23 +293,30 @@
 
   .btn {
     border-radius: var(--r-sm);
-    padding: var(--sp-2) 14px;
+    padding: 9px 16px;
     font-size: var(--fs-sm);
     font-weight: 600;
     border: 1px solid var(--line);
-    background: transparent;
+    background: var(--surface);
     color: var(--text);
     cursor: pointer;
+    transition: background var(--fast) var(--ease);
   }
 
   .btn.ghost {
+    background: transparent;
     border-color: transparent;
     color: var(--muted);
   }
 
+  .btn.ghost:hover {
+    background: var(--raised);
+  }
+
   .empty {
     border: 1px dashed var(--line);
-    border-radius: var(--r);
+    border-radius: var(--r-lg);
+    background: rgba(233, 240, 247, 0.015);
     padding: var(--sp-6) var(--sp-4);
     text-align: center;
     color: var(--muted);

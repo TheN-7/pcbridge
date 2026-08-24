@@ -61,16 +61,20 @@
     display: grid;
     place-items: center;
     padding: var(--sp-4);
-    background: color-mix(in srgb, var(--ink) 78%, transparent);
-    backdrop-filter: blur(3px);
+    background: color-mix(in srgb, var(--ink) 72%, transparent);
+    backdrop-filter: blur(6px);
+    -webkit-backdrop-filter: blur(6px);
   }
 
   .panel {
-    width: min(400px, 100%);
+    width: min(420px, 100%);
     border: 1px solid var(--signal-line);
-    border-radius: var(--r-lg);
-    background: var(--raised);
-    padding: var(--sp-5);
+    border-radius: var(--r-xl);
+    background: var(--raised-hover);
+    backdrop-filter: var(--blur);
+    -webkit-backdrop-filter: var(--blur);
+    box-shadow: var(--shadow-lg), var(--signal-glow);
+    padding: var(--sp-6) var(--sp-5);
     display: flex;
     flex-direction: column;
     gap: var(--sp-2);
@@ -121,13 +125,15 @@
     font-size: var(--fs-sm);
     font-weight: 600;
     border: 1px solid var(--line);
-    background: transparent;
+    background: var(--surface);
     color: var(--text);
     cursor: pointer;
+    transition: background var(--fast) var(--ease), border-color var(--fast) var(--ease);
   }
 
   .btn:hover:not(:disabled) {
-    background: var(--surface);
+    background: var(--raised-hover);
+    border-color: color-mix(in srgb, var(--text) 18%, var(--line));
   }
 
   .btn:disabled {
@@ -136,9 +142,10 @@
   }
 
   .btn.primary {
-    background: var(--signal);
+    background: var(--signal-grad);
     color: var(--on-signal);
-    border-color: var(--signal);
+    border-color: transparent;
+    box-shadow: var(--signal-glow);
   }
 
   .btn.danger {

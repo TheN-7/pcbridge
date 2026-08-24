@@ -20,14 +20,17 @@
     display: inline-flex;
     align-items: center;
     gap: 7px;
-    padding: 4px 11px;
+    padding: 5px 12px;
     border-radius: 999px;
     border: 1px solid transparent;
     font-family: var(--mono);
     font-size: var(--fs-xs);
+    font-weight: 600;
     letter-spacing: 0.05em;
     text-transform: uppercase;
     white-space: nowrap;
+    backdrop-filter: var(--blur);
+    -webkit-backdrop-filter: var(--blur);
   }
 
   .led {

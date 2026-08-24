@@ -194,9 +194,8 @@
   .page {
     display: flex;
     flex-direction: column;
-    gap: var(--sp-3);
-    padding: var(--sp-5);
-    max-width: 780px;
+    gap: var(--sp-4);
+    padding: var(--sp-6) var(--sp-5);
   }
 
   .head {
@@ -213,12 +212,16 @@
 
   .card {
     border: 1px solid var(--line);
-    border-radius: var(--r);
+    border-radius: var(--r-lg);
     background: var(--raised);
-    padding: var(--sp-4);
+    backdrop-filter: var(--blur);
+    -webkit-backdrop-filter: var(--blur);
+    box-shadow: var(--shadow-md);
+    padding: var(--sp-5);
     display: flex;
     flex-direction: column;
     gap: var(--sp-4);
+    transition: background var(--base) var(--ease), box-shadow var(--base) var(--ease);
   }
 
   .card-head {
@@ -251,32 +254,33 @@
 
   .segmented {
     display: inline-flex;
+    gap: 3px;
     border: 1px solid var(--line);
     border-radius: var(--r-sm);
-    overflow: hidden;
+    background: var(--surface);
+    padding: 3px;
     width: fit-content;
   }
 
   .seg {
     background: transparent;
     border: 0;
+    border-radius: 7px;
     padding: 7px 18px;
     color: var(--muted);
     font-family: var(--mono);
     font-size: var(--fs-sm);
     letter-spacing: 0.04em;
     cursor: pointer;
-    transition: background var(--fast) var(--ease), color var(--fast) var(--ease);
-  }
-
-  .seg + .seg {
-    border-left: 1px solid var(--line);
+    transition: background var(--fast) var(--ease), color var(--fast) var(--ease),
+                box-shadow var(--fast) var(--ease);
   }
 
   .seg.on {
-    background: var(--signal-soft);
-    color: var(--signal);
+    background: var(--signal-grad);
+    color: var(--on-signal);
     font-weight: 700;
+    box-shadow: var(--shadow-sm);
   }
 
   .modehelp {
@@ -295,8 +299,8 @@
   .kv {
     display: grid;
     grid-template-columns: auto 1fr;
-    gap: 7px var(--sp-4);
-    align-items: baseline;
+    gap: 9px var(--sp-4);
+    align-items: center;
     margin: 0;
   }
 
@@ -314,10 +318,9 @@
     display: inline-flex;
     align-items: baseline;
     gap: var(--sp-2);
-    background: none;
-    border: 0;
-    padding: 2px 6px;
-    margin-left: -6px;
+    background: var(--surface);
+    border: 1px solid var(--line);
+    padding: 6px 10px;
     border-radius: var(--r-sm);
     color: var(--text);
     font-family: var(--mono);
@@ -326,15 +329,18 @@
     cursor: pointer;
     text-align: left;
     word-break: break-all;
-    transition: background var(--fast) var(--ease);
+    transition: background var(--fast) var(--ease), border-color var(--fast) var(--ease);
   }
 
   .copy:hover {
     background: var(--signal-soft);
+    border-color: var(--signal-line);
   }
 
   .copy.accent {
     color: var(--signal);
+    border-color: var(--signal-line);
+    background: var(--signal-soft);
   }
 
   .hint {
@@ -359,38 +365,49 @@
 
   .btn {
     border-radius: var(--r-sm);
-    padding: var(--sp-2) 14px;
+    padding: 9px 16px;
     font-family: var(--sans);
     font-size: var(--fs-sm);
     font-weight: 600;
     border: 1px solid var(--line);
-    background: transparent;
+    background: var(--surface);
     color: var(--text);
     cursor: pointer;
     text-decoration: none;
     display: inline-flex;
     align-items: center;
-    transition: background var(--fast) var(--ease);
+    transition: background var(--fast) var(--ease), border-color var(--fast) var(--ease),
+                transform var(--fast) var(--ease), box-shadow var(--fast) var(--ease);
   }
 
   .btn:hover {
-    background: var(--surface);
+    background: var(--raised-hover);
+    border-color: color-mix(in srgb, var(--text) 18%, var(--line));
+  }
+
+  .btn:active {
+    transform: translateY(1px);
   }
 
   .btn.primary {
-    background: var(--signal);
+    background: var(--signal-grad);
     color: var(--on-signal);
-    border-color: var(--signal);
+    border-color: transparent;
+    box-shadow: var(--signal-glow);
   }
 
   .btn.primary:hover {
-    filter: brightness(1.08);
-    background: var(--signal);
+    filter: brightness(1.06);
   }
 
   .btn.ghost {
+    background: transparent;
     border-color: transparent;
     color: var(--muted);
+  }
+
+  .btn.ghost:hover {
+    background: var(--raised);
   }
 
   .devices {
@@ -406,17 +423,28 @@
     display: flex;
     align-items: center;
     gap: var(--sp-3);
-    padding: 11px 13px;
+    padding: 12px 14px;
     border: 1px solid var(--line);
     border-radius: var(--r);
     background: var(--surface);
+    transition: background var(--fast) var(--ease), border-color var(--fast) var(--ease);
+  }
+
+  .dev:hover {
+    background: var(--raised-hover);
+    border-color: color-mix(in srgb, var(--text) 14%, var(--line));
   }
 
   .dev-glyph {
-    font-size: 17px;
-    opacity: 0.85;
-    width: 20px;
-    text-align: center;
+    display: grid;
+    place-items: center;
+    width: 30px;
+    height: 30px;
+    border-radius: var(--r-sm);
+    background: var(--signal-soft);
+    color: var(--signal);
+    font-size: 15px;
+    flex: none;
   }
 
   .dev-info {
@@ -459,8 +487,10 @@
     gap: 13px;
     border: 1px solid var(--signal-line);
     background: var(--signal-soft);
-    border-radius: var(--r);
-    padding: var(--sp-3) 14px;
+    backdrop-filter: var(--blur);
+    -webkit-backdrop-filter: var(--blur);
+    border-radius: var(--r-lg);
+    padding: var(--sp-3) 16px;
     flex-wrap: wrap;
   }
 

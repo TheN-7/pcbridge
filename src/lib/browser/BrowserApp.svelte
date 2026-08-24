@@ -213,15 +213,21 @@
     display: grid;
     place-items: center;
     padding: var(--sp-4);
-    background: var(--ink);
   }
 
   .card {
-    width: min(340px, 100%);
+    width: min(360px, 100%);
     display: flex;
     flex-direction: column;
     gap: var(--sp-3);
     text-align: left;
+    border: 1px solid var(--line);
+    border-radius: var(--r-xl);
+    background: var(--raised);
+    backdrop-filter: var(--blur);
+    -webkit-backdrop-filter: var(--blur);
+    box-shadow: var(--shadow-lg);
+    padding: var(--sp-6) var(--sp-5);
   }
 
   h1 {
@@ -257,11 +263,13 @@
     letter-spacing: 0.35em;
     text-align: center;
     width: 100%;
+    transition: border-color var(--fast) var(--ease), box-shadow var(--fast) var(--ease);
   }
 
   .pin:focus {
-    border-color: var(--signal);
+    border-color: var(--signal-line);
     outline: none;
+    box-shadow: var(--signal-glow);
   }
 
   /* A slow pulse rather than a spinner: this wait depends on a person
@@ -289,16 +297,23 @@
     padding: var(--sp-3);
     font-family: var(--sans);
     font-size: var(--fs-base);
-    font-weight: 600;
-    border: 1px solid var(--signal);
-    background: var(--signal);
+    font-weight: 700;
+    border: 1px solid transparent;
+    background: var(--signal-grad);
     color: var(--on-signal);
+    box-shadow: var(--signal-glow);
     cursor: pointer;
+    transition: filter var(--fast) var(--ease);
+  }
+
+  .primary:hover:not(:disabled) {
+    filter: brightness(1.06);
   }
 
   .primary:disabled {
     opacity: 0.5;
     cursor: default;
+    box-shadow: none;
   }
 
   .err {
@@ -317,7 +332,6 @@
   .browser {
     min-height: 100vh;
     min-height: 100dvh;
-    background: var(--ink);
     display: flex;
     flex-direction: column;
     padding-bottom: 84px;
@@ -332,7 +346,9 @@
     border-bottom: 1px solid var(--line);
     position: sticky;
     top: 0;
-    background: var(--ink);
+    background: var(--raised);
+    backdrop-filter: var(--blur);
+    -webkit-backdrop-filter: var(--blur);
     z-index: 2;
   }
 
@@ -409,6 +425,7 @@
     gap: var(--sp-2);
     border-radius: var(--r-sm);
     padding: 0 var(--sp-2);
+    transition: background var(--fast) var(--ease);
   }
 
   .row.sel {
@@ -502,7 +519,10 @@
     gap: var(--sp-3);
     padding: var(--sp-3) var(--sp-4);
     padding-bottom: calc(var(--sp-3) + env(safe-area-inset-bottom, 0px));
-    background: var(--surface);
+    background: var(--raised);
+    backdrop-filter: var(--blur);
+    -webkit-backdrop-filter: var(--blur);
+    box-shadow: var(--shadow-lg);
     border-top: 1px solid var(--line);
   }
 

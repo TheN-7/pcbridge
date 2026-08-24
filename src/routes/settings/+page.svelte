@@ -263,8 +263,8 @@
   .page {
     display: flex;
     flex-direction: column;
-    gap: var(--sp-3);
-    padding: var(--sp-5);
+    gap: var(--sp-4);
+    padding: var(--sp-6) var(--sp-5);
     max-width: 720px;
   }
 
@@ -285,9 +285,12 @@
 
   .card {
     border: 1px solid var(--line);
-    border-radius: var(--r);
+    border-radius: var(--r-lg);
     background: var(--raised);
-    padding: var(--sp-4);
+    backdrop-filter: var(--blur);
+    -webkit-backdrop-filter: var(--blur);
+    box-shadow: var(--shadow-md);
+    padding: var(--sp-5);
     display: flex;
     flex-direction: column;
     gap: var(--sp-4);
@@ -328,12 +331,18 @@
   .input {
     flex: 1;
     min-width: 160px;
-    background: var(--ink);
+    background: var(--surface);
     border: 1px solid var(--line);
     border-radius: var(--r-sm);
     color: var(--text);
-    padding: var(--sp-2) 10px;
+    padding: 9px 12px;
     font-size: var(--fs-sm);
+    transition: border-color var(--fast) var(--ease);
+  }
+
+  .input:focus {
+    outline: none;
+    border-color: var(--signal-line);
   }
 
   .input[readonly] {
@@ -342,19 +351,20 @@
 
   .btn {
     border-radius: var(--r-sm);
-    padding: var(--sp-2) 14px;
+    padding: 9px 16px;
     font-family: var(--sans);
     font-size: var(--fs-sm);
     font-weight: 600;
     border: 1px solid var(--line);
-    background: transparent;
+    background: var(--surface);
     color: var(--text);
     cursor: pointer;
-    transition: background var(--fast) var(--ease);
+    transition: background var(--fast) var(--ease), border-color var(--fast) var(--ease);
   }
 
   .btn:hover:not(:disabled) {
-    background: var(--surface);
+    background: var(--raised-hover);
+    border-color: color-mix(in srgb, var(--text) 18%, var(--line));
   }
 
   .btn:disabled {
@@ -363,21 +373,27 @@
   }
 
   .btn.ghost {
+    background: transparent;
     border-color: transparent;
     color: var(--muted);
   }
 
+  .btn.ghost:hover:not(:disabled) {
+    background: var(--raised);
+  }
+
   .fingerprint {
     text-align: left;
-    background: var(--ink);
+    background: var(--surface);
     border: 1px solid var(--line);
     border-radius: var(--r-sm);
     color: var(--muted);
-    padding: var(--sp-2) 10px;
+    padding: 9px 12px;
     font-size: var(--fs-xs);
     cursor: pointer;
     word-break: break-all;
     line-height: 1.7;
+    transition: border-color var(--fast) var(--ease), color var(--fast) var(--ease);
   }
 
   .fingerprint:hover {
@@ -387,30 +403,31 @@
 
   .segmented {
     display: inline-flex;
+    gap: 3px;
     border: 1px solid var(--line);
     border-radius: var(--r-sm);
-    overflow: hidden;
+    background: var(--surface);
+    padding: 3px;
     width: fit-content;
   }
 
   .seg {
     background: transparent;
     border: 0;
+    border-radius: 7px;
     padding: 7px 16px;
     color: var(--muted);
     font-family: var(--sans);
     font-size: var(--fs-sm);
     cursor: pointer;
-  }
-
-  .seg + .seg {
-    border-left: 1px solid var(--line);
+    transition: background var(--fast) var(--ease), color var(--fast) var(--ease);
   }
 
   .seg.on {
-    background: var(--signal-soft);
-    color: var(--signal);
+    background: var(--signal-grad);
+    color: var(--on-signal);
     font-weight: 600;
+    box-shadow: var(--shadow-sm);
   }
 
   .toggle {
@@ -444,19 +461,23 @@
   .notice,
   .error {
     margin: 0;
-    padding: var(--sp-2) var(--sp-3);
+    padding: 10px var(--sp-3);
     border-radius: var(--r-sm);
     font-size: var(--fs-sm);
+    font-weight: 600;
+    border: 1px solid transparent;
   }
 
   .notice {
     background: var(--live-soft);
     color: var(--live);
+    border-color: color-mix(in srgb, var(--live) 30%, transparent);
   }
 
   .error {
     background: var(--fault-soft);
     color: var(--fault);
+    border-color: color-mix(in srgb, var(--fault) 30%, transparent);
   }
 
   @media (max-width: 720px) {

@@ -129,8 +129,7 @@
     display: flex;
     flex-direction: column;
     gap: var(--sp-4);
-    padding: var(--sp-5);
-    max-width: 780px;
+    padding: var(--sp-6) var(--sp-5);
   }
 
   .head {
@@ -164,9 +163,12 @@
 
   .card {
     border: 1px solid var(--line);
-    border-radius: var(--r);
+    border-radius: var(--r-lg);
     background: var(--raised);
-    padding: var(--sp-4);
+    backdrop-filter: var(--blur);
+    -webkit-backdrop-filter: var(--blur);
+    box-shadow: var(--shadow-md);
+    padding: var(--sp-5);
   }
 
   .join {
@@ -195,16 +197,22 @@
     align-items: baseline;
     justify-content: space-between;
     gap: var(--sp-3);
-    background: var(--ink);
+    background: var(--signal-soft);
     border: 1px solid var(--signal-line);
     border-radius: var(--r-sm);
     color: var(--signal);
     padding: var(--sp-3);
     font-size: var(--fs-md);
+    font-weight: 600;
     font-family: var(--mono);
     cursor: pointer;
     text-align: left;
     word-break: break-all;
+    transition: background var(--fast) var(--ease);
+  }
+
+  .joinaddr:hover:not(:disabled) {
+    background: color-mix(in srgb, var(--signal) 22%, var(--signal-soft));
   }
 
   .joinaddr:disabled {
@@ -234,10 +242,18 @@
     display: flex;
     align-items: center;
     gap: var(--sp-3);
-    padding: 11px 13px;
+    padding: 12px 14px;
     border: 1px solid var(--line);
     border-radius: var(--r);
     background: var(--raised);
+    backdrop-filter: var(--blur);
+    -webkit-backdrop-filter: var(--blur);
+    transition: background var(--fast) var(--ease), border-color var(--fast) var(--ease);
+  }
+
+  .item:hover {
+    background: var(--raised-hover);
+    border-color: color-mix(in srgb, var(--text) 14%, var(--line));
   }
 
   .item.quiet {
@@ -245,10 +261,14 @@
   }
 
   .glyph {
-    font-size: 17px;
-    opacity: 0.85;
-    width: 20px;
-    text-align: center;
+    display: grid;
+    place-items: center;
+    width: 30px;
+    height: 30px;
+    border-radius: var(--r-sm);
+    background: var(--signal-soft);
+    color: var(--signal);
+    font-size: 15px;
     flex: none;
   }
 
@@ -274,7 +294,8 @@
 
   .empty {
     border: 1px dashed var(--line);
-    border-radius: var(--r);
+    border-radius: var(--r-lg);
+    background: rgba(233, 240, 247, 0.015);
     padding: var(--sp-6) var(--sp-4);
     text-align: center;
     color: var(--muted);

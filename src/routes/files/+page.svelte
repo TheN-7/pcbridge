@@ -196,7 +196,7 @@
     display: flex;
     flex-direction: column;
     gap: var(--sp-3);
-    padding: var(--sp-5);
+    padding: var(--sp-6) var(--sp-5);
   }
 
   .head {
@@ -258,8 +258,11 @@
   .tablewrap {
     overflow-x: auto;
     border: 1px solid var(--line);
-    border-radius: var(--r);
+    border-radius: var(--r-lg);
     background: var(--raised);
+    backdrop-filter: var(--blur);
+    -webkit-backdrop-filter: var(--blur);
+    box-shadow: var(--shadow-md);
   }
 
   table {
@@ -275,13 +278,14 @@
     text-transform: uppercase;
     color: var(--dim);
     text-align: left;
-    padding: 9px 14px;
+    padding: 11px 14px;
+    background: rgba(233, 240, 247, 0.02);
     border-bottom: 1px solid var(--line);
     font-weight: 500;
   }
 
   td {
-    padding: 7px 14px;
+    padding: 9px 14px;
     font-size: var(--fs-sm);
     border-bottom: 1px solid var(--line-soft);
     vertical-align: middle;
@@ -289,6 +293,14 @@
 
   tr:last-child td {
     border-bottom: none;
+  }
+
+  tbody tr {
+    transition: background var(--fast) var(--ease);
+  }
+
+  tbody tr:hover td {
+    background: rgba(233, 240, 247, 0.025);
   }
 
   tr.selected td {
@@ -368,13 +380,15 @@
     font-size: var(--fs-sm);
     font-weight: 600;
     border: 1px solid var(--line);
-    background: transparent;
+    background: var(--surface);
     color: var(--text);
     cursor: pointer;
+    transition: background var(--fast) var(--ease), border-color var(--fast) var(--ease);
   }
 
   .btn:hover {
-    background: var(--surface);
+    background: var(--raised-hover);
+    border-color: color-mix(in srgb, var(--text) 18%, var(--line));
   }
 
   .btn.ghost {
@@ -392,11 +406,14 @@
     align-items: center;
     justify-content: space-between;
     gap: var(--sp-3);
-    padding: var(--sp-2) var(--sp-3);
+    padding: 10px var(--sp-3);
     border: 1px solid var(--signal-line);
     background: var(--signal-soft);
+    backdrop-filter: var(--blur);
+    -webkit-backdrop-filter: var(--blur);
     border-radius: var(--r);
     font-size: var(--fs-sm);
+    font-weight: 600;
   }
 
   .selbar-actions {

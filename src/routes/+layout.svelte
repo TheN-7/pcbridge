@@ -56,6 +56,11 @@
 <div class="shell">
   <ApprovalPrompt />
   <nav class="rail" aria-label="Sections">
+    <div class="brand">
+      <span class="mark" aria-hidden="true">◈</span>
+      <span class="wordmark">pc<span class="slash">/</span>bridge</span>
+    </div>
+
     <span class="rail-label">Bridge</span>
     {#each nav.slice(0, 4) as item (item.href)}
       <a href={item.href} class="nav" class:on={isActive(item.href)}>
@@ -71,6 +76,11 @@
         <span class="t">{item.label}</span>
       </a>
     {/each}
+
+    <div class="railfoot">
+      <span class="dot" class:live={bridge.serving} aria-hidden="true"></span>
+      {bridge.serving ? "Serving" : "Stopped"}
+    </div>
   </nav>
 
   <main class="content">
@@ -84,7 +94,9 @@
           : "Not connected to the PC Bridge service — showing placeholder data."}
       </div>
     {/if}
-    {@render children()}
+    <div class="viewport">
+      {@render children()}
+    </div>
   </main>
 
   <nav class="tabbar" aria-label="Sections">
@@ -101,10 +113,9 @@
 <style>
   .shell {
     display: grid;
-    grid-template-columns: 186px 1fr;
+    grid-template-columns: 232px 1fr;
     min-height: 100vh;
     min-height: 100dvh;
-    background: var(--ink);
   }
 
   /* ---------- desktop rail ---------- */
@@ -112,9 +123,42 @@
     display: flex;
     flex-direction: column;
     gap: 2px;
-    padding: var(--sp-3) 10px;
-    border-right: 1px solid var(--line);
-    background: var(--ink);
+    padding: var(--sp-4) 14px;
+    border-right: 1px solid var(--line-soft);
+    background: rgba(233, 240, 247, 0.02);
+  }
+
+  .brand {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    padding: var(--sp-1) 8px var(--sp-4);
+    margin-bottom: var(--sp-2);
+    border-bottom: 1px solid var(--line-soft);
+  }
+
+  .mark {
+    display: grid;
+    place-items: center;
+    width: 30px;
+    height: 30px;
+    border-radius: var(--r-sm);
+    background: var(--signal-grad);
+    color: var(--on-signal);
+    font-size: 15px;
+    box-shadow: var(--signal-glow);
+    flex: none;
+  }
+
+  .wordmark {
+    font-family: var(--mono);
+    font-size: 15px;
+    font-weight: 700;
+    letter-spacing: -0.03em;
+  }
+
+  .slash {
+    color: var(--signal);
   }
 
   .rail-label {
@@ -133,50 +177,90 @@
   .nav {
     display: flex;
     align-items: center;
-    gap: 10px;
-    padding: var(--sp-2) 10px;
+    gap: 11px;
+    padding: 9px 11px;
     border-radius: var(--r-sm);
     color: var(--muted);
     font-size: var(--fs-sm);
+    font-weight: 500;
     text-decoration: none;
     transition: background var(--fast) var(--ease),
-                color var(--fast) var(--ease);
+                color var(--fast) var(--ease),
+                box-shadow var(--fast) var(--ease);
   }
 
   .nav:hover {
-    background: var(--surface);
+    background: var(--raised);
     color: var(--text);
   }
 
-  /* Active state carries an inset amber edge rather than a filled
-     block — it marks position without shouting over page content. */
+  /* Active state carries a soft amber wash and a matching glow ring
+     rather than a hard block — it marks position without shouting
+     over page content. */
   .nav.on {
     background: var(--signal-soft);
     color: var(--text);
-    box-shadow: inset 2px 0 0 var(--signal);
+    box-shadow: inset 0 0 0 1px var(--signal-line);
+  }
+
+  .nav.on .g {
+    color: var(--signal);
+    opacity: 1;
   }
 
   .nav .g {
-    width: 15px;
+    width: 16px;
     text-align: center;
-    opacity: 0.8;
+    opacity: 0.75;
+    transition: color var(--fast) var(--ease);
+  }
+
+  .railfoot {
+    margin-top: auto;
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: var(--sp-2) 11px 6px;
+    font-family: var(--mono);
+    font-size: var(--fs-xs);
+    color: var(--dim);
+    border-top: 1px solid var(--line-soft);
+  }
+
+  .railfoot .dot {
+    width: 7px;
+    height: 7px;
+    border-radius: 50%;
+    background: var(--dim);
+    flex: none;
+  }
+
+  .railfoot .dot.live {
+    background: var(--live);
+    box-shadow: 0 0 0 3px var(--live-soft);
   }
 
   .content {
     min-width: 0;
-    background: var(--surface);
     overflow-y: auto;
+  }
+
+  .viewport {
+    max-width: 900px;
+    margin: 0 auto;
   }
 
   .banner {
     display: flex;
     align-items: center;
     gap: var(--sp-2);
-    padding: var(--sp-2) var(--sp-5);
+    padding: 10px var(--sp-5);
     background: var(--warn-soft);
     color: var(--warn);
     border-bottom: 1px solid color-mix(in srgb, var(--warn) 30%, transparent);
     font-size: var(--fs-sm);
+    backdrop-filter: var(--blur);
+    -webkit-backdrop-filter: var(--blur);
   }
 
   .banner .dot {
@@ -205,8 +289,12 @@
     .tabbar {
       display: grid;
       grid-template-columns: repeat(5, 1fr);
+      gap: 2px;
       border-top: 1px solid var(--line);
-      background: var(--ink);
+      background: var(--raised);
+      backdrop-filter: var(--blur);
+      -webkit-backdrop-filter: var(--blur);
+      box-shadow: var(--shadow-lg);
       /* Clears the iOS home indicator without a fixed magic number. */
       padding-bottom: env(safe-area-inset-bottom, 0);
     }
@@ -216,11 +304,13 @@
       flex-direction: column;
       align-items: center;
       gap: 3px;
-      padding: var(--sp-2) 4px;
+      padding: 9px 4px 8px;
+      margin: 4px 3px;
+      border-radius: var(--r-sm);
       color: var(--dim);
       text-decoration: none;
       font-size: 10px;
-      transition: color var(--fast) var(--ease);
+      transition: color var(--fast) var(--ease), background var(--fast) var(--ease);
     }
 
     .tab .g {
@@ -230,6 +320,7 @@
 
     .tab.on {
       color: var(--signal);
+      background: var(--signal-soft);
     }
   }
 </style>

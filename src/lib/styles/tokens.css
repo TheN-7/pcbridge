@@ -1,32 +1,38 @@
 /* ============================================================
    PC Bridge — design tokens
-   "Amber signal on cool ink."
+   "Amber signal on cool glass."
 
    The accent is the activity LED on a network switch: warm amber
    against a blue-biased ink. Status colors (live/fault/warn) are
    semantic and deliberately separate from the accent, so "online"
    never competes with "transferring" for attention.
 
-   Every surface in the app reads from these variables. Nothing
-   should hard-code a color.
+   Surfaces are glass: a translucent panel over a softly lit ground,
+   blurred so depth reads without ever competing with content. Every
+   surface in the app reads from these variables — nothing hard-codes
+   a color, a radius, or a shadow.
    ============================================================ */
 
 :root {
   /* ---- neutrals: cool, blue-biased, never pure grey ---- */
-  --ink: #0c1116;          /* app ground */
-  --surface: #131a21;      /* panels */
-  --raised: #1a232c;       /* cards, rows */
-  --line: #26323d;         /* hairline borders */
-  --line-soft: #1e2831;    /* internal dividers */
+  --ink: #0a0e14;          /* app ground */
+  --surface: #121922;      /* solid panels: inputs, nodes, table head */
+  --raised: rgba(233, 240, 247, 0.045); /* glass cards, over the ground */
+  --raised-hover: rgba(233, 240, 247, 0.07);
+  --line: rgba(233, 240, 247, 0.09);    /* hairline borders */
+  --line-soft: rgba(233, 240, 247, 0.055); /* internal dividers */
 
-  --text: #e6edf3;
-  --muted: #8598a8;
-  --dim: #5e7183;
+  --text: #eef3f8;
+  --muted: #8b9bad;
+  --dim: #5c6d80;
 
   /* ---- accent: the signal ---- */
   --signal: #ff9e3d;
+  --signal-2: #ffc16b;
+  --signal-grad: linear-gradient(135deg, var(--signal-2), var(--signal) 70%);
   --signal-soft: rgba(255, 158, 61, 0.14);
   --signal-line: rgba(255, 158, 61, 0.35);
+  --signal-glow: 0 0 0 1px rgba(255, 158, 61, 0.4), 0 10px 26px -10px rgba(255, 158, 61, 0.6);
   --on-signal: #1a0e00;    /* text on a filled amber button */
 
   /* ---- semantic state ---- */
@@ -37,6 +43,13 @@
   --warn: #ffc53d;
   --warn-soft: rgba(255, 197, 61, 0.13);
 
+  /* ---- depth: glass panels over a lit ground ---- */
+  --blur: blur(22px) saturate(160%);
+  --shadow-sm: 0 1px 2px rgba(0, 0, 0, 0.35);
+  --shadow-md: 0 14px 32px -14px rgba(0, 0, 0, 0.55), inset 0 1px 0 rgba(255, 255, 255, 0.04);
+  --shadow-lg: 0 28px 56px -20px rgba(0, 0, 0, 0.6), inset 0 1px 0 rgba(255, 255, 255, 0.05);
+  --glow-ring: 0 0 0 1px var(--line);
+
   /* ---- type ----
      Mono is the display and data face, not a fallback: this app's
      real content is addresses, ports, PINs, fingerprints and byte
@@ -44,20 +57,21 @@
      webfont fallback to design around. */
   --mono: ui-monospace, "Cascadia Code", "Cascadia Mono", "SF Mono",
           "JetBrains Mono", Consolas, monospace;
-  --sans: system-ui, "Segoe UI Variable Text", "Segoe UI", -apple-system,
+  --sans: "Segoe UI Variable Text", "Segoe UI", system-ui, -apple-system,
           BlinkMacSystemFont, sans-serif;
 
   --fs-xs: 11px;
   --fs-sm: 12.5px;
   --fs-base: 14px;
   --fs-md: 16px;
-  --fs-lg: 20px;
-  --fs-xl: 29px;
+  --fs-lg: 21px;
+  --fs-xl: 30px;
 
   /* ---- shape & rhythm ---- */
-  --r-sm: 7px;
-  --r: 10px;
-  --r-lg: 14px;
+  --r-sm: 9px;
+  --r: 14px;
+  --r-lg: 20px;
+  --r-xl: 26px;
 
   --sp-1: 4px;
   --sp-2: 8px;
@@ -65,6 +79,7 @@
   --sp-4: 16px;
   --sp-5: 24px;
   --sp-6: 32px;
+  --sp-7: 44px;
 
   /* ---- motion ---- */
   --ease: cubic-bezier(0.22, 0.61, 0.36, 1);
@@ -76,22 +91,26 @@
 
 /* Light theme carries the same care as dark: the amber is darkened
    to hold contrast on white rather than naively reusing the dark
-   value, which would fail against a light ground. */
+   value, which would fail against a light ground. Glass panels turn
+   into frosted white over a warm, barely-there wash. */
 @media (prefers-color-scheme: light) {
   :root:not([data-theme="dark"]) {
-    --ink: #f6f8fa;
+    --ink: #eef1f5;
     --surface: #ffffff;
-    --raised: #ffffff;
-    --line: #dce4eb;
-    --line-soft: #e9eef3;
+    --raised: rgba(255, 255, 255, 0.72);
+    --raised-hover: rgba(255, 255, 255, 0.92);
+    --line: rgba(15, 23, 33, 0.09);
+    --line-soft: rgba(15, 23, 33, 0.06);
 
-    --text: #0c1116;
+    --text: #10151c;
     --muted: #5c6b7a;
     --dim: #8496a5;
 
     --signal: #b45a06;
+    --signal-2: #d97a12;
     --signal-soft: rgba(180, 90, 6, 0.10);
     --signal-line: rgba(180, 90, 6, 0.30);
+    --signal-glow: 0 0 0 1px rgba(180, 90, 6, 0.28), 0 10px 26px -12px rgba(180, 90, 6, 0.45);
     --on-signal: #fff3e4;
 
     --live: #0f7a52;
@@ -101,24 +120,31 @@
     --warn: #8a6100;
     --warn-soft: rgba(138, 97, 0, 0.10);
 
+    --shadow-sm: 0 1px 2px rgba(15, 23, 33, 0.06);
+    --shadow-md: 0 14px 32px -16px rgba(15, 23, 33, 0.18), inset 0 1px 0 rgba(255, 255, 255, 0.6);
+    --shadow-lg: 0 28px 56px -24px rgba(15, 23, 33, 0.22), inset 0 1px 0 rgba(255, 255, 255, 0.7);
+
     color-scheme: light;
   }
 }
 
 :root[data-theme="light"] {
-  --ink: #f6f8fa;
+  --ink: #eef1f5;
   --surface: #ffffff;
-  --raised: #ffffff;
-  --line: #dce4eb;
-  --line-soft: #e9eef3;
+  --raised: rgba(255, 255, 255, 0.72);
+  --raised-hover: rgba(255, 255, 255, 0.92);
+  --line: rgba(15, 23, 33, 0.09);
+  --line-soft: rgba(15, 23, 33, 0.06);
 
-  --text: #0c1116;
+  --text: #10151c;
   --muted: #5c6b7a;
   --dim: #8496a5;
 
   --signal: #b45a06;
+  --signal-2: #d97a12;
   --signal-soft: rgba(180, 90, 6, 0.10);
   --signal-line: rgba(180, 90, 6, 0.30);
+  --signal-glow: 0 0 0 1px rgba(180, 90, 6, 0.28), 0 10px 26px -12px rgba(180, 90, 6, 0.45);
   --on-signal: #fff3e4;
 
   --live: #0f7a52;
@@ -127,6 +153,10 @@
   --fault-soft: rgba(195, 59, 59, 0.10);
   --warn: #8a6100;
   --warn-soft: rgba(138, 97, 0, 0.10);
+
+  --shadow-sm: 0 1px 2px rgba(15, 23, 33, 0.06);
+  --shadow-md: 0 14px 32px -16px rgba(15, 23, 33, 0.18), inset 0 1px 0 rgba(255, 255, 255, 0.6);
+  --shadow-lg: 0 28px 56px -24px rgba(15, 23, 33, 0.22), inset 0 1px 0 rgba(255, 255, 255, 0.7);
 
   color-scheme: light;
 }
@@ -145,14 +175,37 @@ body {
   margin: 0;
 }
 
+/* A soft, fixed glow behind everything — the "lit ground" the glass
+   panels sit on. Fixed attachment keeps it from scrolling with the
+   page, so it reads as ambient light rather than printed content. */
 body {
-  background: var(--ink);
+  background-color: var(--ink);
+  background-image:
+    radial-gradient(1100px 620px at 12% -8%, rgba(255, 158, 61, 0.08), transparent 60%),
+    radial-gradient(900px 680px at 104% 4%, rgba(76, 141, 255, 0.06), transparent 55%),
+    radial-gradient(700px 500px at 50% 115%, rgba(63, 207, 142, 0.035), transparent 60%);
+  background-attachment: fixed;
   color: var(--text);
   font-family: var(--sans);
   font-size: var(--fs-base);
   line-height: 1.6;
   -webkit-font-smoothing: antialiased;
   overscroll-behavior: none;
+}
+
+@media (prefers-color-scheme: light) {
+  :root:not([data-theme="dark"]) body {
+    background-image:
+      radial-gradient(1100px 620px at 12% -8%, rgba(180, 90, 6, 0.05), transparent 60%),
+      radial-gradient(900px 680px at 104% 4%, rgba(76, 141, 255, 0.05), transparent 55%),
+      radial-gradient(700px 500px at 50% 115%, rgba(15, 122, 82, 0.03), transparent 60%);
+  }
+}
+:root[data-theme="light"] body {
+  background-image:
+    radial-gradient(1100px 620px at 12% -8%, rgba(180, 90, 6, 0.05), transparent 60%),
+    radial-gradient(900px 680px at 104% 4%, rgba(76, 141, 255, 0.05), transparent 55%),
+    radial-gradient(700px 500px at 50% 115%, rgba(15, 122, 82, 0.03), transparent 60%);
 }
 
 /* Digits line up in columns everywhere they're compared:
@@ -174,8 +227,8 @@ kbd {
 }
 
 h1, h2, h3 {
-  font-family: var(--mono);
-  letter-spacing: -0.035em;
+  font-family: var(--sans);
+  letter-spacing: -0.03em;
   font-weight: 700;
   text-wrap: balance;
   margin: 0;
