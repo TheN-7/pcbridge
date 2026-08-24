@@ -1,0 +1,11 @@
+﻿{
+  "version": "0.0.1",
+  "configurations": [
+    {
+      "name": "pcbridge-ui",
+      "runtimeExecutable": "C:\\dev\\toolchain\\node\\npm.cmd",
+      "runtimeArgs": ["run", "dev"],
+      "port": 1420
+    }
+  ]
+}

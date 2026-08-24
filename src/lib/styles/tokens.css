@@ -1,0 +1,215 @@
+/* ============================================================
+   PC Bridge — design tokens
+   "Amber signal on cool ink."
+
+   The accent is the activity LED on a network switch: warm amber
+   against a blue-biased ink. Status colors (live/fault/warn) are
+   semantic and deliberately separate from the accent, so "online"
+   never competes with "transferring" for attention.
+
+   Every surface in the app reads from these variables. Nothing
+   should hard-code a color.
+   ============================================================ */
+
+:root {
+  /* ---- neutrals: cool, blue-biased, never pure grey ---- */
+  --ink: #0c1116;          /* app ground */
+  --surface: #131a21;      /* panels */
+  --raised: #1a232c;       /* cards, rows */
+  --line: #26323d;         /* hairline borders */
+  --line-soft: #1e2831;    /* internal dividers */
+
+  --text: #e6edf3;
+  --muted: #8598a8;
+  --dim: #5e7183;
+
+  /* ---- accent: the signal ---- */
+  --signal: #ff9e3d;
+  --signal-soft: rgba(255, 158, 61, 0.14);
+  --signal-line: rgba(255, 158, 61, 0.35);
+  --on-signal: #1a0e00;    /* text on a filled amber button */
+
+  /* ---- semantic state ---- */
+  --live: #3fcf8e;
+  --live-soft: rgba(63, 207, 142, 0.14);
+  --fault: #ff6b6b;
+  --fault-soft: rgba(255, 107, 107, 0.13);
+  --warn: #ffc53d;
+  --warn-soft: rgba(255, 197, 61, 0.13);
+
+  /* ---- type ----
+     Mono is the display and data face, not a fallback: this app's
+     real content is addresses, ports, PINs, fingerprints and byte
+     counts. Nothing loads over the network, so there is no silent
+     webfont fallback to design around. */
+  --mono: ui-monospace, "Cascadia Code", "Cascadia Mono", "SF Mono",
+          "JetBrains Mono", Consolas, monospace;
+  --sans: system-ui, "Segoe UI Variable Text", "Segoe UI", -apple-system,
+          BlinkMacSystemFont, sans-serif;
+
+  --fs-xs: 11px;
+  --fs-sm: 12.5px;
+  --fs-base: 14px;
+  --fs-md: 16px;
+  --fs-lg: 20px;
+  --fs-xl: 29px;
+
+  /* ---- shape & rhythm ---- */
+  --r-sm: 7px;
+  --r: 10px;
+  --r-lg: 14px;
+
+  --sp-1: 4px;
+  --sp-2: 8px;
+  --sp-3: 12px;
+  --sp-4: 16px;
+  --sp-5: 24px;
+  --sp-6: 32px;
+
+  /* ---- motion ---- */
+  --ease: cubic-bezier(0.22, 0.61, 0.36, 1);
+  --fast: 120ms;
+  --base: 180ms;
+
+  color-scheme: dark;
+}
+
+/* Light theme carries the same care as dark: the amber is darkened
+   to hold contrast on white rather than naively reusing the dark
+   value, which would fail against a light ground. */
+@media (prefers-color-scheme: light) {
+  :root:not([data-theme="dark"]) {
+    --ink: #f6f8fa;
+    --surface: #ffffff;
+    --raised: #ffffff;
+    --line: #dce4eb;
+    --line-soft: #e9eef3;
+
+    --text: #0c1116;
+    --muted: #5c6b7a;
+    --dim: #8496a5;
+
+    --signal: #b45a06;
+    --signal-soft: rgba(180, 90, 6, 0.10);
+    --signal-line: rgba(180, 90, 6, 0.30);
+    --on-signal: #fff3e4;
+
+    --live: #0f7a52;
+    --live-soft: rgba(15, 122, 82, 0.10);
+    --fault: #c33b3b;
+    --fault-soft: rgba(195, 59, 59, 0.10);
+    --warn: #8a6100;
+    --warn-soft: rgba(138, 97, 0, 0.10);
+
+    color-scheme: light;
+  }
+}
+
+:root[data-theme="light"] {
+  --ink: #f6f8fa;
+  --surface: #ffffff;
+  --raised: #ffffff;
+  --line: #dce4eb;
+  --line-soft: #e9eef3;
+
+  --text: #0c1116;
+  --muted: #5c6b7a;
+  --dim: #8496a5;
+
+  --signal: #b45a06;
+  --signal-soft: rgba(180, 90, 6, 0.10);
+  --signal-line: rgba(180, 90, 6, 0.30);
+  --on-signal: #fff3e4;
+
+  --live: #0f7a52;
+  --live-soft: rgba(15, 122, 82, 0.10);
+  --fault: #c33b3b;
+  --fault-soft: rgba(195, 59, 59, 0.10);
+  --warn: #8a6100;
+  --warn-soft: rgba(138, 97, 0, 0.10);
+
+  color-scheme: light;
+}
+
+/* ============================================================
+   Base
+   ============================================================ */
+
+* {
+  box-sizing: border-box;
+}
+
+html,
+body {
+  height: 100%;
+  margin: 0;
+}
+
+body {
+  background: var(--ink);
+  color: var(--text);
+  font-family: var(--sans);
+  font-size: var(--fs-base);
+  line-height: 1.6;
+  -webkit-font-smoothing: antialiased;
+  overscroll-behavior: none;
+}
+
+/* Digits line up in columns everywhere they're compared:
+   file sizes, transfer rates, ports, storage. */
+.mono,
+code,
+kbd {
+  font-family: var(--mono);
+  font-variant-numeric: tabular-nums;
+}
+
+/* Section eyebrows and column headers */
+.label {
+  font-family: var(--mono);
+  font-size: var(--fs-xs);
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: var(--dim);
+}
+
+h1, h2, h3 {
+  font-family: var(--mono);
+  letter-spacing: -0.035em;
+  font-weight: 700;
+  text-wrap: balance;
+  margin: 0;
+}
+
+a {
+  color: var(--signal);
+}
+
+/* Keyboard focus must always be visible — this app is operated,
+   and several destructive actions live one Tab away. */
+:focus-visible {
+  outline: 2px solid var(--signal);
+  outline-offset: 2px;
+  border-radius: var(--r-sm);
+}
+
+::selection {
+  background: var(--signal-soft);
+}
+
+/* Scrollbars styled to match, rather than punching a bright
+   system-default hole through a dark panel. */
+* {
+  scrollbar-width: thin;
+  scrollbar-color: var(--line) transparent;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+  }
+}
