@@ -41,6 +41,12 @@ class BrowserSession {
   #sid = "";
   #poll: ReturnType<typeof setInterval> | null = null;
 
+  /** Open only while this tab is actually on the file browser — see
+   *  `#goLive`. It carries no data; its sole purpose is that holding it
+   *  open is what tells the PC's Devices screen this device is here
+   *  right now, not just "seen recently". */
+  #liveEvents: EventSource | null = null;
+
   /** Resumes a previous session if it's still approved. */
   async start() {
     const saved = storedSession();
@@ -51,6 +57,7 @@ class BrowserSession {
 
     if (status === "approved") {
       this.phase = "ready";
+      this.#goLive();
       await this.open("");
     } else {
       // Pending or gone: make them enter the PIN again rather than
@@ -59,9 +66,22 @@ class BrowserSession {
     }
   }
 
+  /** Holds the liveness connection open for as long as the tab is on the
+   *  file browser. Safe to call repeatedly — it no-ops once open. */
+  #goLive() {
+    if (this.#liveEvents || typeof EventSource === "undefined") return;
+    this.#liveEvents = new EventSource(this.#url("/api/session/events"));
+  }
+
+  #goQuiet() {
+    this.#liveEvents?.close();
+    this.#liveEvents = null;
+  }
+
   #forget() {
     this.#sid = "";
     if (typeof localStorage !== "undefined") localStorage.removeItem(SESSION_KEY);
+    this.#goQuiet();
     this.phase = "pin";
   }
 
@@ -110,6 +130,7 @@ class BrowserSession {
 
       if (body.status === "approved") {
         this.phase = "ready";
+        this.#goLive();
         await this.open("");
       } else {
         this.phase = "waiting";
@@ -130,6 +151,7 @@ class BrowserSession {
       if (status === "approved") {
         this.#stopWatching();
         this.phase = "ready";
+        this.#goLive();
         await this.open("");
       } else if (status === "denied") {
         this.#stopWatching();
@@ -147,6 +169,7 @@ class BrowserSession {
 
   stop() {
     this.#stopWatching();
+    this.#goQuiet();
   }
 
   // ---- browsing ----------------------------------------------------

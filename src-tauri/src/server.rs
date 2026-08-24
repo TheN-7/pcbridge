@@ -127,6 +127,11 @@ fn browser_routes() -> Router<SharedState> {
         // where a session is obtained.
         .route("/api/session", post(open_session))
         .route("/api/session", get(session_status))
+        // Held open for as long as the browsing tab is on screen, purely
+        // so the Devices screen can tell "connected now" from "seen
+        // recently" — see `session_events`. It carries no data, unlike
+        // `/events`, which browsers are never given access to.
+        .route("/api/session/events", get(session_events))
         .route("/api/files/list", get(files::list))
         .route("/api/files/download", get(files::download))
         .route("/api/files/download-zip", get(files::download_zip))
@@ -475,6 +480,42 @@ async fn events(
     let stream = initial.chain(updates).map(move |json| {
         let _keep = &guard;
         Ok(Event::default().data(json))
+    });
+
+    Sse::new(stream).keep_alive(
+        KeepAlive::new()
+            .interval(Duration::from_secs(15))
+            .text("keep-alive"),
+    )
+}
+
+/// A browser's counterpart to `events` — held open for exactly as long as
+/// its tab is on screen, purely so this device counts toward `streams`
+/// while it's genuinely there.
+///
+/// It never carries a payload. `events` streams the full snapshot, which
+/// is exactly what a browser must not see: settings, the PIN, other
+/// devices, transfer history. This connection exists only for its
+/// lifetime, not its content — nothing is ever sent down it besides the
+/// SSE keep-alive comment, and nothing needs to be, since the guard that
+/// keeps the stream count accurate lives and dies with the connection
+/// either way.
+async fn session_events(
+    State(state): State<SharedState>,
+    client: Option<axum::Extension<ClientId>>,
+) -> Sse<impl Stream<Item = Result<Event, Infallible>>> {
+    let guard = client.map(|axum::Extension(ClientId(id))| {
+        state.client_stream_opened(&id);
+        StreamGuard { state: state.clone(), id }
+    });
+
+    // A stream that never resolves. It doesn't need to: `keep_alive`
+    // handles the wire protocol on its own timer, and the guard is kept
+    // alive simply by living inside this stream's state for as long as
+    // the connection does — the same trick `events` uses above.
+    let stream = stream::pending::<Result<Event, Infallible>>().map(move |item| {
+        let _keep = &guard;
+        item
     });
 
     Sse::new(stream).keep_alive(
