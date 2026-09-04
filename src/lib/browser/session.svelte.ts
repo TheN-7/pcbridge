@@ -67,6 +67,15 @@ class BrowserSession {
 
   /** Resumes a previous session if it's still approved. */
   async start() {
+    // A scanned QR lands here with ?pair=... attached. Spend it before
+    // anything else: it is one use and short lived, and it settles both
+    // the PIN and the approval in one step.
+    const scanned = new URLSearchParams(location.search).get("pair");
+    if (scanned) {
+      await this.#pairWith(scanned);
+      return;
+    }
+
     const saved = storedSession();
     if (!saved) return;
 
@@ -149,23 +158,75 @@ class BrowserSession {
         return;
       }
 
-      const body = await res.json();
-      this.#sid = body.sessionId;
-      localStorage.setItem(SESSION_KEY, this.#sid);
-      if (body.deviceKey) localStorage.setItem(DEVICE_KEY, body.deviceKey);
-
-      if (body.status === "approved") {
-        this.phase = "ready";
-        this.#goLive();
-        await this.open("");
-      } else {
-        this.phase = "waiting";
-        this.#watch();
-      }
+      await this.#adopt(await res.json());
     } catch (err) {
       this.error = `Couldn't reach the PC: ${err}`;
     } finally {
       this.checking = false;
+    }
+  }
+
+  /** Opens a session from a scanned pairing code.
+   *
+   *  Spent immediately and stripped from the address bar. Leaving it
+   *  there would park a working credential in history, in bookmarks and
+   *  in the next screenshot — and it would be re-sent, already used, on
+   *  every reload. */
+  async #pairWith(code: string) {
+    this.checking = true;
+    this.error = null;
+
+    try {
+      const res = await fetch("/api/session", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          pairCode: code,
+          deviceKey: stored(DEVICE_KEY) || undefined,
+        }),
+      });
+      this.#stripPairCode();
+
+      if (!res.ok) {
+        this.error = (await res.text()) || "That pairing code didn't work.";
+        this.phase = "pin";
+        return;
+      }
+
+      await this.#adopt(await res.json());
+    } catch (err) {
+      this.error = `Couldn't reach the PC: ${err}`;
+      this.phase = "pin";
+    } finally {
+      this.checking = false;
+    }
+  }
+
+  #stripPairCode() {
+    if (typeof history === "undefined") return;
+    const url = new URL(location.href);
+    if (!url.searchParams.has("pair")) return;
+    url.searchParams.delete("pair");
+    history.replaceState(null, "", `${url.pathname}${url.search}${url.hash}`);
+  }
+
+  /** Takes up the session described by an /api/session reply. */
+  async #adopt(body: {
+    sessionId: string;
+    deviceKey?: string;
+    status: SessionStatus;
+  }) {
+    this.#sid = body.sessionId;
+    localStorage.setItem(SESSION_KEY, this.#sid);
+    if (body.deviceKey) localStorage.setItem(DEVICE_KEY, body.deviceKey);
+
+    if (body.status === "approved") {
+      this.phase = "ready";
+      this.#goLive();
+      await this.open("");
+    } else {
+      this.phase = "waiting";
+      this.#watch();
     }
   }
 

@@ -62,6 +62,13 @@ pub struct AppState {
     /// chunks, which is the only place a stop can take effect.
     cancelled: RwLock<std::collections::HashSet<String>>,
 
+    /// The pairing code currently on screen, if any.
+    ///
+    /// One at a time and short lived: a code is only meaningful while
+    /// someone is looking at the PC to scan it, and a standing code left
+    /// lying around would be a second permanent password.
+    pair_code: Mutex<Option<PairCode>>,
+
     /// Tells the network listener to restart under a different scheme.
     /// A watch channel rather than a broadcast: only the latest value
     /// matters, and a listener that missed an intermediate flip should
@@ -107,6 +114,22 @@ const PIN_MAX_DELAY: Duration = Duration::from_secs(30);
 /// Quiet period after which an address is forgiven and starts over.
 const PIN_FAILURE_TTL: Duration = Duration::from_secs(15 * 60);
 
+/// A pairing code shown on screen for a device to scan.
+struct PairCode {
+    code: String,
+    expires_at: Instant,
+    /// Whether scanning it should also remember the device, decided by
+    /// the person who displayed the code rather than by the device.
+    remember: bool,
+}
+
+/// How long a pairing code stays valid.
+///
+/// Long enough to unlock a phone, open the camera and click through the
+/// certificate warning; short enough that a code left on screen after
+/// someone walks away has already stopped working.
+const PAIR_CODE_TTL: Duration = Duration::from_secs(3 * 60);
+
 impl AppState {
     pub fn load(data_dir: PathBuf, identity: Identity) -> Result<SharedState> {
         std::fs::create_dir_all(&data_dir)?;
@@ -134,6 +157,7 @@ impl AppState {
             remembered: RwLock::new(remembered),
             pin_failures: Mutex::new(std::collections::HashMap::new()),
             cancelled: RwLock::new(std::collections::HashSet::new()),
+            pair_code: Mutex::new(None),
             mode_tx,
         });
 
@@ -700,6 +724,73 @@ impl AppState {
             self.cancelled.write().unwrap().insert(id.to_string());
             self.publish();
         }
+    }
+
+    /// Issues a pairing code, replacing any code already on screen.
+    ///
+    /// Returns the code and how long it is good for. Replacing rather
+    /// than accumulating means the code being displayed is always the
+    /// only one that works — otherwise every code ever generated would
+    /// stay live until it expired, and a screenshot from ten minutes ago
+    /// would still let someone in.
+    pub fn mint_pair_code(&self, remember: bool) -> (String, u64) {
+        // Six groups of four hex digits is 96 bits. Not typed by anyone
+        // -- it travels inside the QR -- so it is sized to be
+        // unguessable rather than to be read aloud.
+        let code: String = (0..6)
+            .map(|_| format!("{:04x}", rand::random::<u16>()))
+            .collect();
+
+        *self.pair_code.lock().unwrap() = Some(PairCode {
+            code: code.clone(),
+            expires_at: Instant::now() + PAIR_CODE_TTL,
+            remember,
+        });
+
+        (code, PAIR_CODE_TTL.as_secs())
+    }
+
+    /// Spends a pairing code, returning whether to remember the device.
+    ///
+    /// One use only: the code is cleared whether or not it matched, so a
+    /// wrong guess also costs the attempt. There is exactly one live code
+    /// at a time, so this cannot be used to grind through candidates.
+    pub fn take_pair_code(&self, presented: &str) -> Option<bool> {
+        let mut slot = self.pair_code.lock().unwrap();
+        let current = slot.take()?;
+
+        if current.expires_at <= Instant::now() {
+            return None;
+        }
+        if current.code != presented {
+            return None;
+        }
+
+        Some(current.remember)
+    }
+
+    /// What a device should open to pair, or `None` when this machine
+    /// has no LAN address.
+    ///
+    /// Always the HTTPS listener: the plain-HTTP one is bound to
+    /// loopback and serves this window only, so it is not reachable from
+    /// a phone at all. That does mean a scan lands on a self-signed
+    /// certificate warning — unavoidable while no authority will vouch
+    /// for a private address, and the reason the fingerprint is on the
+    /// Settings page to check against.
+    pub fn pair_url(&self, code: &str) -> Option<String> {
+        self.server_info()
+            .lan_address
+            .map(|addr| format!("https://{addr}/?pair={code}"))
+    }
+
+    /// The code currently on screen, for rendering its QR. Does not
+    /// consume it -- the device that scans it does that.
+    pub fn current_pair_code(&self) -> Option<String> {
+        let slot = self.pair_code.lock().unwrap();
+        slot.as_ref()
+            .filter(|c| c.expires_at > Instant::now())
+            .map(|c| c.code.clone())
     }
 
     /// Whether the loop carrying this transfer should give up now.

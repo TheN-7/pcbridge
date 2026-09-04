@@ -410,6 +410,39 @@ class Bridge {
 
   regeneratePin() { return this.#post("/api/settings/pin/regenerate"); }
 
+  /** Puts a fresh pairing code on screen and says what it encodes.
+   *
+   *  The code itself never comes back here — only the URL, for showing
+   *  underneath the QR, and how long it lasts. The image is fetched
+   *  separately from /api/pair-qr, so the credential is never sitting in
+   *  the DOM waiting to be copied out of a screenshot of the devtools. */
+  async newPairCode(
+    remember: boolean,
+  ): Promise<{ url: string | null; expiresInSeconds: number } | null> {
+    try {
+      const res = await fetch(withPin(`${this.#apiBase}/api/pair-code`), {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ remember }),
+      });
+      if (!res.ok) {
+        this.lastError = (await res.text()) || `Request failed (${res.status})`;
+        return null;
+      }
+      this.lastError = null;
+      return await res.json();
+    } catch (err) {
+      this.lastError = `Could not reach the server: ${err}`;
+      return null;
+    }
+  }
+
+  /** Where the QR image lives. Cache-busted per code so the browser
+   *  can't show the previous one after a new code is minted. */
+  pairQrUrl(nonce: number): string {
+    return withPin(`${this.#apiBase}/api/pair-qr?v=${nonce}`);
+  }
+
 
   cancelTransfer(id: string) { return this.#post(`/api/transfers/${id}/cancel`); }
 

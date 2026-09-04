@@ -168,6 +168,8 @@ fn api_routes() -> Router<SharedState> {
         .route("/api/serving", post(set_serving))
         .route("/api/settings", post(patch_settings))
         .route("/api/settings/pin/regenerate", post(regenerate_pin))
+        .route("/api/pair-code", post(new_pair_code))
+        .route("/api/pair-qr", get(pair_qr))
         .route("/api/sessions/{id}/resolve", post(resolve_session))
         .route("/api/remembered/{id}/forget", post(forget_device))
         .route("/api/transfers/{id}/cancel", post(cancel_transfer))
@@ -301,7 +303,13 @@ fn percent_decode(value: &str) -> String {
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct OpenSessionBody {
+    /// Absent when a pairing code is used instead.
+    #[serde(default)]
     pin: String,
+    /// A code scanned from the QR on the PC's screen. Stands in for the
+    /// PIN, and settles the approval too -- see `open_session`.
+    #[serde(default)]
+    pair_code: Option<String>,
     /// The key this browser kept from a previous visit, if any. Absent
     /// on a device's first connection, and after the user clears site
     /// data — both of which simply mean it waits for approval again.
@@ -341,35 +349,172 @@ async fn open_session(
     let label = state.client_label(&client_id);
     let address = state.client_address(&client_id);
 
-    // Checked before the PIN, so a caller that is already being made to
-    // wait gains nothing by guessing again — and so a correct guess
-    // arriving mid-backoff doesn't skip the queue.
-    if let Some(wait) = state.pin_retry_delay(&address) {
-        let secs = wait.as_secs().max(1);
-        return (
-            StatusCode::TOO_MANY_REQUESTS,
-            [(axum::http::header::RETRY_AFTER, secs.to_string())],
-            format!("Too many wrong PINs. Try again in {secs}s."),
-        )
-            .into_response();
-    }
+    // A scanned pairing code stands in for the PIN. It was on this
+    // machine's own screen seconds ago and is good once, which is a
+    // stronger claim than knowing a PIN that never changes — so it also
+    // settles the approval that a PIN alone only starts.
+    let paired = match body.pair_code.as_deref() {
+        Some(code) if !code.is_empty() => match state.take_pair_code(code) {
+            Some(remember) => Some(remember),
+            None => {
+                return (
+                    StatusCode::UNAUTHORIZED,
+                    "That pairing code has expired. Show a new one on the PC.",
+                )
+                    .into_response()
+            }
+        },
+        _ => None,
+    };
 
-    let expected = state.settings().pin;
-    if !constant_time_eq(body.pin.as_bytes(), expected.as_bytes()) {
-        state.record_pin_failure(&address);
-        return (StatusCode::UNAUTHORIZED, "That PIN wasn't accepted.").into_response();
+    if paired.is_none() {
+        // Checked before the PIN, so a caller that is already being made
+        // to wait gains nothing by guessing again — and so a correct
+        // guess arriving mid-backoff doesn't skip the queue.
+        if let Some(wait) = state.pin_retry_delay(&address) {
+            let secs = wait.as_secs().max(1);
+            return (
+                StatusCode::TOO_MANY_REQUESTS,
+                [(axum::http::header::RETRY_AFTER, secs.to_string())],
+                format!("Too many wrong PINs. Try again in {secs}s."),
+            )
+                .into_response();
+        }
+
+        let expected = state.settings().pin;
+        if !constant_time_eq(body.pin.as_bytes(), expected.as_bytes()) {
+            state.record_pin_failure(&address);
+            return (StatusCode::UNAUTHORIZED, "That PIN wasn't accepted.").into_response();
+        }
+        state.clear_pin_failures(&address);
     }
-    state.clear_pin_failures(&address);
 
     let (session, device_key) =
         state.begin_session(&label, &address, body.device_key.as_deref());
 
+    // Pairing approves outright, and remembers if that is what the person
+    // holding the PC chose when they displayed the code. Reusing
+    // resolve_session rather than approving inline keeps one path for
+    // "this device is allowed in", including the part that also approves
+    // any other session the same device already had waiting.
+    let status = if let Some(remember) = paired {
+        let _ = state.resolve_session(&session.id, true, remember);
+        crate::model::SessionStatus::Approved
+    } else {
+        session.status
+    };
+
     Json(SessionReply {
         session_id: session.id,
         device_key: Some(device_key),
-        status: session.status,
+        status,
     })
     .into_response()
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct PairCodeBody {
+    /// Whether scanning should also remember the device. Decided here,
+    /// on the PC, rather than by whatever scans the code.
+    #[serde(default)]
+    remember: bool,
+}
+
+#[derive(serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+struct PairCodeReply {
+    /// What the QR encodes. `None` when this machine has no LAN address
+    /// to be reached at, in which case there is nothing to pair over.
+    url: Option<String>,
+    expires_in_seconds: u64,
+}
+
+/// Puts a fresh pairing code on screen. Owner-only by virtue of living
+/// in `api_routes`, which browsers never reach.
+async fn new_pair_code(
+    State(state): State<SharedState>,
+    Json(body): Json<PairCodeBody>,
+) -> Response {
+    let (code, ttl) = state.mint_pair_code(body.remember);
+    Json(PairCodeReply {
+        url: state.pair_url(&code),
+        expires_in_seconds: ttl,
+    })
+    .into_response()
+}
+
+/// The current pairing code as a QR image.
+///
+/// Served rather than embedded in the snapshot so the code itself never
+/// has to travel through the state broadcast, and so the interface can
+/// simply point an `<img>` at it.
+async fn pair_qr(State(state): State<SharedState>) -> Response {
+    let Some(code) = state.current_pair_code() else {
+        return (StatusCode::NOT_FOUND, "No pairing code is on screen.").into_response();
+    };
+    let Some(url) = state.pair_url(&code) else {
+        return (
+            StatusCode::CONFLICT,
+            "This PC isn't on a network a device could reach it on.",
+        )
+            .into_response();
+    };
+
+    match qr_svg(&url) {
+        Some(svg) => (
+            [
+                (axum::http::header::CONTENT_TYPE, "image/svg+xml"),
+                (axum::http::header::CACHE_CONTROL, "no-store"),
+            ],
+            svg,
+        )
+            .into_response(),
+        None => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "Couldn't draw that pairing code.",
+        )
+            .into_response(),
+    }
+}
+
+/// A QR for `data`, as SVG built straight from the module matrix.
+///
+/// Drawn by hand rather than with the crate's own renderer so its `svg`
+/// and `image` features can stay off — they pull in a considerably
+/// larger tree than a few hundred rectangles are worth. No fixed pixel
+/// size either: the viewBox lets the page scale it to whatever room it
+/// has without the edges going soft.
+fn qr_svg(data: &str) -> Option<String> {
+    use qrcode::{Color, QrCode};
+
+    let code = QrCode::new(data.as_bytes()).ok()?;
+    let width = code.width();
+    let colors = code.to_colors();
+
+    // Four modules of quiet zone, as the spec requires. Scanners are
+    // much less reliable without it, especially against a dark UI.
+    const QUIET: usize = 4;
+    let side = width + QUIET * 2;
+
+    let mut svg = format!(
+        "<svg xmlns=\"http://www.w3.org/2000/svg\" viewBox=\"0 0 {side} {side}\" \
+         shape-rendering=\"crispEdges\">\
+         <rect width=\"{side}\" height=\"{side}\" fill=\"#fff\"/>"
+    );
+
+    for (i, color) in colors.iter().enumerate() {
+        if matches!(color, Color::Dark) {
+            let x = i % width + QUIET;
+            let y = i / width + QUIET;
+            svg.push_str(&format!(
+                "<rect x=\"{x}\" y=\"{y}\" width=\"1\" height=\"1\"/>"
+            ));
+        }
+    }
+
+    svg.push_str("</svg>");
+    Some(svg)
 }
 
 /// Polled by a waiting browser until it's allowed in or turned away.

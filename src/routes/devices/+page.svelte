@@ -27,6 +27,47 @@
     return "▪";
   }
 
+  // Pairing code. Held here rather than in the shared snapshot: it is a
+  // credential with a three-minute life, and nothing else in the app has
+  // any business seeing it.
+  let pairUrl = $state<string | null>(null);
+  let pairNonce = $state(0);
+  let pairLeft = $state(0);
+  let pairRemember = $state(true);
+  let pairTimer: ReturnType<typeof setInterval> | null = null;
+
+  async function showPairCode() {
+    const issued = await bridge.newPairCode(pairRemember);
+    // No URL means the PC has no address a device could reach it on, so
+    // there is nothing to encode. Bailing here rather than starting a
+    // countdown against a code that can't be shown.
+    if (!issued?.url) return;
+
+    pairUrl = issued.url;
+    // Changes the image URL so the browser fetches the new code rather
+    // than showing the cached picture of the last one.
+    pairNonce = Date.now();
+    pairLeft = issued.expiresInSeconds;
+
+    if (pairTimer) clearInterval(pairTimer);
+    pairTimer = setInterval(() => {
+      pairLeft -= 1;
+      if (pairLeft <= 0) hidePairCode();
+    }, 1000);
+  }
+
+  function hidePairCode() {
+    if (pairTimer) clearInterval(pairTimer);
+    pairTimer = null;
+    pairUrl = null;
+    pairLeft = 0;
+  }
+
+  // Leaving the page must not leave the interval running.
+  $effect(() => () => {
+    if (pairTimer) clearInterval(pairTimer);
+  });
+
   let copied = $state(false);
   async function copyAddress() {
     if (!address) return;
@@ -68,6 +109,29 @@
         Advanced, then Proceed. It's remembered after that.
       </p>
     {/if}
+
+    <div class="pair">
+      {#if pairUrl}
+        <img class="qr" src={bridge.pairQrUrl(pairNonce)} alt="Pairing code" />
+        <p class="joinnote">
+          Point the phone's camera at this. No PIN needed — it connects
+          straight away. Expires in {pairLeft}s.
+        </p>
+        <button class="pairbtn ghost" onclick={hidePairCode}>Hide</button>
+      {:else}
+        <label class="pairopt">
+          <input type="checkbox" bind:checked={pairRemember} />
+          <span>Remember whichever device scans it</span>
+        </label>
+        <button class="pairbtn" onclick={showPairCode} disabled={!address}>
+          Show a pairing code
+        </button>
+        <p class="joinnote">
+          Skips typing the address and the PIN. Good for three minutes,
+          and for one device.
+        </p>
+      {/if}
+    </div>
   </section>
 
   <!-- Connected now -->
@@ -219,6 +283,64 @@
     color: var(--dim);
     border-color: var(--line);
     cursor: default;
+  }
+
+  .pair {
+    display: flex;
+    flex-direction: column;
+    align-items: flex-start;
+    gap: var(--sp-2);
+    margin-top: var(--sp-3);
+    padding-top: var(--sp-3);
+    border-top: 1px solid var(--line-soft);
+  }
+
+  /* White plate around the code, whatever the theme. A QR inverted by a
+     dark background is one many scanners refuse outright, and the quiet
+     zone only works against light. */
+  .qr {
+    width: 176px;
+    height: 176px;
+    align-self: center;
+    padding: var(--sp-2);
+    background: #fff;
+    border-radius: var(--r-sm);
+  }
+
+  .pairopt {
+    display: flex;
+    align-items: center;
+    gap: var(--sp-2);
+    font-size: var(--fs-sm);
+    color: var(--muted);
+    cursor: pointer;
+  }
+
+  .pairbtn {
+    border-radius: var(--r-sm);
+    padding: var(--sp-2) 14px;
+    font-family: var(--sans);
+    font-size: var(--fs-sm);
+    font-weight: 600;
+    border: 1px solid var(--line);
+    background: transparent;
+    color: var(--text);
+    cursor: pointer;
+    transition: background var(--fast) var(--ease);
+  }
+
+  .pairbtn:hover:not(:disabled) {
+    background: var(--surface);
+  }
+
+  .pairbtn:disabled {
+    opacity: 0.45;
+    cursor: default;
+  }
+
+  .pairbtn.ghost {
+    border-color: transparent;
+    color: var(--muted);
   }
 
   .hint {

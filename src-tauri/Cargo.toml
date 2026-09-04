@@ -47,4 +47,8 @@ sysinfo = { version = "0.39.6", default-features = false, features = ["disk"] }
 tokio-rustls = { version = "0.26.4", default-features = false, features = ["ring", "logging", "tls12"] }
 rust-embed = { version = "8.12.0", features = ["mime-guess"] }
 zip = { version = "8.6.0", default-features = false, features = ["deflate"] }
+# Pairing QR codes, rendered server-side. default-features off keeps the
+# `image` and `svg` renderers out of the build: only the module matrix is
+# needed here, and the SVG is emitted by hand from it.
+qrcode = { version = "0.14", default-features = false }
 
