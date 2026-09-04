@@ -57,6 +57,24 @@ jobs:
           node-version: "24"
           cache: npm
 
+      # A tag and the version in tauri.conf.json have to agree, or the
+      # release says one thing and the installer inside it says another.
+      # Runs before the compiler so a mismatch costs seconds rather than
+      # a full build, and only on tag pushes -- branches are free to sit
+      # at whatever version they like until they're released.
+      - name: Check the tag matches the declared version
+        if: startsWith(github.ref, 'refs/tags/')
+        shell: bash
+        run: |
+          declared=$(node -p "require('./src-tauri/tauri.conf.json').version")
+          tag="${GITHUB_REF_NAME#v}"
+          if [ "$declared" != "$tag" ]; then
+            echo "::error::Tag $GITHUB_REF_NAME does not match tauri.conf.json version $declared."
+            echo "::error::Bump package.json, src-tauri/Cargo.toml and src-tauri/tauri.conf.json to $tag, or tag v$declared instead."
+            exit 1
+          fi
+          echo "Tag $GITHUB_REF_NAME matches the declared version $declared."
+
       # Rust is pinned exactly, unlike Node. The compiler version affects the
       # binary that ships, so matching the version TOOLCHAIN.md records keeps
       # CI builds and local builds comparable. Bump both together.
@@ -91,10 +109,17 @@ jobs:
         with:
           # tauri-action publishes a Release only when tagName is set, so
           # these are empty for branch and PR builds -- the same build runs,
-          # it just stops short of publishing. __VERSION__ is substituted
-          # with the version in tauri.conf.json.
-          tagName: ${{ startsWith(github.ref, 'refs/tags/') && 'v__VERSION__' || '' }}
-          releaseName: ${{ startsWith(github.ref, 'refs/tags/') && 'pcbridge v__VERSION__' || '' }}
+          # it just stops short of publishing.
+          #
+          # The pushed tag itself, not tauri-action's __VERSION__. That
+          # placeholder expands to the version in tauri.conf.json, and the
+          # two drifted: every tag so far was cut from a commit whose
+          # config still said 0.1.0, so pushing v4.3.0 published a release
+          # against a v0.1.0 tag nobody had ever pushed -- which is why it
+          # appeared nowhere anyone thought to look. The check above now
+          # stops the two disagreeing in the first place.
+          tagName: ${{ startsWith(github.ref, 'refs/tags/') && github.ref_name || '' }}
+          releaseName: ${{ startsWith(github.ref, 'refs/tags/') && format('pcbridge {0}', github.ref_name) || '' }}
           releaseDraft: true
           prerelease: false
 
