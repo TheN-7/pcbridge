@@ -315,7 +315,12 @@ struct SessionReply {
     session_id: String,
     /// Store this and send it back next time. It is what makes
     /// "remember this device" survive a change of address.
-    device_key: String,
+    ///
+    /// Only present on the reply that opens a session, which is where a
+    /// key is issued. The status poll leaves it out rather than handing
+    /// back a second key the client would overwrite the first with.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    device_key: Option<String>,
     status: crate::model::SessionStatus,
 }
 
@@ -361,7 +366,7 @@ async fn open_session(
 
     Json(SessionReply {
         session_id: session.id,
-        device_key,
+        device_key: Some(device_key),
         status: session.status,
     })
     .into_response()
@@ -375,6 +380,7 @@ async fn session_status(
     match state.session(&q.sid) {
         Some(session) => Json(SessionReply {
             session_id: session.id,
+            device_key: None,
             status: session.status,
         })
         .into_response(),
