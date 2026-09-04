@@ -47,6 +47,12 @@ pub struct AppState {
     /// Devices allowed in permanently.
     remembered: RwLock<Vec<RememberedDevice>>,
 
+    /// Failed PIN attempts per source address, for the backoff in
+    /// `pin_retry_delay`. Not persisted: a restart is not something an
+    /// attacker on the network can cause, and forgetting on restart is
+    /// preferable to locking someone out of their own machine across one.
+    pin_failures: Mutex<std::collections::HashMap<String, PinFailures>>,
+
     /// Tells the network listener to restart under a different scheme.
     /// A watch channel rather than a broadcast: only the latest value
     /// matters, and a listener that missed an intermediate flip should
@@ -70,6 +76,27 @@ struct ClientRecord {
     last_seen: Instant,
     streams: u32,
 }
+
+/// Wrong PINs seen from one address, and when the last one arrived.
+struct PinFailures {
+    count: u32,
+    last: Instant,
+}
+
+/// Wrong guesses allowed before an address has to start waiting.
+///
+/// Generous enough to absorb genuine mistyping on a phone keyboard, low
+/// enough that it bites long before a meaningful fraction of a six-digit
+/// space has been tried.
+const PIN_FREE_ATTEMPTS: u32 = 5;
+
+/// How long the delay doubles up to. A six-digit PIN is a million
+/// possibilities; at one guess per 30s an exhaustive search takes most
+/// of a year, which is the point.
+const PIN_MAX_DELAY: Duration = Duration::from_secs(30);
+
+/// Quiet period after which an address is forgiven and starts over.
+const PIN_FAILURE_TTL: Duration = Duration::from_secs(15 * 60);
 
 impl AppState {
     pub fn load(data_dir: PathBuf, identity: Identity) -> Result<SharedState> {
@@ -96,6 +123,7 @@ impl AppState {
             clients: RwLock::new(std::collections::HashMap::new()),
             sessions: RwLock::new(std::collections::HashMap::new()),
             remembered: RwLock::new(remembered),
+            pin_failures: Mutex::new(std::collections::HashMap::new()),
             mode_tx,
         });
 
@@ -286,18 +314,46 @@ impl AppState {
     /// Starts a session for a device that gave the right PIN.
     ///
     /// A remembered device is approved immediately; anything else waits
-    /// for a person at the PC. Returns the session.
-    pub fn begin_session(&self, device_id: &str, label: &str, address: &str) -> Session {
+    /// for a person at the PC. Returns the session and the key this
+    /// device should present next time.
+    ///
+    /// Recognition is by that key alone. It used to be by an id derived
+    /// from the device's address and User-Agent, which was wrong in both
+    /// directions: a client sets its own User-Agent and an address is
+    /// whatever DHCP last handed out, so anyone able to match both was
+    /// let in with no prompt, while a phone that simply moved to another
+    /// network stopped being recognised and had to be approved again.
+    ///
+    /// `presented_key` is whatever the device claims. A key that matches
+    /// nothing is not an error — it just means this device is new here,
+    /// and it waits for approval like any other.
+    pub fn begin_session(
+        &self,
+        label: &str,
+        address: &str,
+        presented_key: Option<&str>,
+    ) -> (Session, String) {
+        // A device that brings no key gets one. Issuing it here rather
+        // than at approval time means the client has it stored before
+        // the user decides, so "remember" needs no second round trip.
+        let key = match presented_key {
+            Some(k) if !k.is_empty() => k.to_string(),
+            _ => new_device_key(),
+        };
+        let key_hash = hash_device_key(&key);
+        let device_id = device_id_from_hash(&key_hash);
+
         let remembered = self
             .remembered
             .read()
             .unwrap()
             .iter()
-            .any(|d| d.device_id == device_id);
+            .any(|d| !d.key_hash.is_empty() && d.key_hash == key_hash);
 
         let session = Session {
             id: random_id(),
-            device_id: device_id.to_string(),
+            device_id,
+            key_hash,
             label: label.to_string(),
             address: address.to_string(),
             status: if remembered {
@@ -313,7 +369,63 @@ impl AppState {
             .unwrap()
             .insert(session.id.clone(), session.clone());
         self.publish();
-        session
+        (session, key)
+    }
+
+    /// How long this address must wait before its next PIN attempt.
+    ///
+    /// `None` means go ahead. The delay doubles per failure past
+    /// `PIN_FREE_ATTEMPTS` and is capped, so a forgetful owner is
+    /// inconvenienced for seconds while an exhaustive search is pushed
+    /// out of reach. Keyed by address because that is the only thing an
+    /// attacker cannot trivially vary — a User-Agent they choose, and a
+    /// session id they do not yet have.
+    pub fn pin_retry_delay(&self, address: &str) -> Option<Duration> {
+        let failures = self.pin_failures.lock().unwrap();
+        let record = failures.get(address)?;
+
+        if record.last.elapsed() >= PIN_FAILURE_TTL {
+            return None;
+        }
+        if record.count <= PIN_FREE_ATTEMPTS {
+            return None;
+        }
+
+        // 1s, 2s, 4s, ... capped. `min(20)` keeps the shift itself from
+        // overflowing on a very long-running attack.
+        let steps = (record.count - PIN_FREE_ATTEMPTS).min(20);
+        let wait = Duration::from_secs(1u64 << (steps - 1)).min(PIN_MAX_DELAY);
+
+        wait.checked_sub(record.last.elapsed())
+    }
+
+    pub fn record_pin_failure(&self, address: &str) {
+        let mut failures = self.pin_failures.lock().unwrap();
+
+        // One entry per source address, so this would otherwise grow for
+        // as long as the process runs. Sweeping the expired ones when the
+        // map gets large keeps that bounded without paying for a sweep on
+        // every wrong PIN. The threshold is far above any plausible number
+        // of real devices on one network.
+        if failures.len() > 1024 {
+            failures.retain(|_, r| r.last.elapsed() < PIN_FAILURE_TTL);
+        }
+
+        let record = failures
+            .entry(address.to_string())
+            .or_insert(PinFailures { count: 0, last: Instant::now() });
+
+        // A long quiet spell wipes the slate rather than letting one
+        // typo a fortnight ago compound with one today.
+        if record.last.elapsed() >= PIN_FAILURE_TTL {
+            record.count = 0;
+        }
+        record.count += 1;
+        record.last = Instant::now();
+    }
+
+    pub fn clear_pin_failures(&self, address: &str) {
+        self.pin_failures.lock().unwrap().remove(address);
     }
 
     pub fn session(&self, id: &str) -> Option<Session> {
@@ -340,7 +452,11 @@ impl AppState {
             } else {
                 SessionStatus::Denied
             };
-            (session.device_id.clone(), session.label.clone())
+            (
+                session.device_id.clone(),
+                session.label.clone(),
+                session.key_hash.clone(),
+            )
         };
 
         if approve && remember {
@@ -348,6 +464,7 @@ impl AppState {
             if !remembered.iter().any(|d| d.device_id == device.0) {
                 remembered.push(RememberedDevice {
                     device_id: device.0.clone(),
+                    key_hash: device.2,
                     label: device.1,
                     remembered_at: crate::server::now_iso(),
                 });
@@ -577,10 +694,41 @@ impl AppState {
 /// Stable per browser-on-a-device: same phone reconnecting keeps its
 /// entry rather than piling up duplicates. Not a security boundary —
 /// both inputs are client-controlled — purely a display key.
+/// Identifies a *connection* for the Devices screen — who is talking to
+/// us right now, and what to label them.
+///
+/// Deliberately not a credential. Both inputs are chosen or reassigned
+/// freely, so this says "probably the same browser as a moment ago", not
+/// "this is a device I trust". Trust is `RememberedDevice.key_hash`.
 fn client_id(address: &str, agent: &str) -> String {
     use sha2::{Digest, Sha256};
     let digest = Sha256::digest(format!("{address}|{agent}").as_bytes());
     digest.iter().take(8).map(|b| format!("{b:02x}")).collect()
+}
+
+/// A fresh 256-bit device key, hex encoded.
+///
+/// Built from four 64-bit draws — the same primitive `random_id` already
+/// relies on — rather than asking `rand` for an array, so this doesn't
+/// depend on which version's array support is in play.
+fn new_device_key() -> String {
+    (0..4)
+        .map(|_| format!("{:016x}", rand::random::<u64>()))
+        .collect()
+}
+
+fn hash_device_key(key: &str) -> String {
+    use sha2::{Digest, Sha256};
+    let digest = Sha256::digest(key.as_bytes());
+    digest.iter().map(|b| format!("{b:02x}")).collect()
+}
+
+/// A short, stable handle for a device, derived from its key hash.
+///
+/// Only ever used for display and for matching a device's own sessions
+/// to each other; the hash is what actually decides trust.
+fn device_id_from_hash(key_hash: &str) -> String {
+    key_hash.chars().take(16).collect()
 }
 
 fn iso(time: SystemTime) -> String {

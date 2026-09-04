@@ -220,9 +220,15 @@ pub enum SessionStatus {
 #[serde(rename_all = "camelCase")]
 pub struct Session {
     pub id: String,
-    /// Stable per browser-and-device, so "remember" can recognise it
-    /// again on a later visit.
+    /// Derived from the device's key, so "remember" recognises the same
+    /// device on a later visit regardless of what address it turns up on.
     pub device_id: String,
+    /// Hash of the key this device presented (or was just issued). Kept
+    /// so `resolve_session` can record it when the user chooses to
+    /// remember, and `#[serde(skip)]` so it never leaves the process —
+    /// it is the stored half of a credential, not something to render.
+    #[serde(skip)]
+    pub key_hash: String,
     pub label: String,
     pub address: String,
     pub status: SessionStatus,
@@ -235,6 +241,19 @@ pub struct Session {
 #[serde(rename_all = "camelCase")]
 pub struct RememberedDevice {
     pub device_id: String,
+    /// SHA-256 of the key this device must present to be recognised.
+    ///
+    /// Only the hash is stored, so a copy of remembered.json is not
+    /// itself a way in — the same reason a password file holds hashes.
+    ///
+    /// `default` because entries written before device keys existed have
+    /// no such field. They deserialize to an empty string, which no
+    /// presented key can ever hash to, so those devices are asked for
+    /// approval once more. That is the intended migration: the trust they
+    /// were granted rested on an address and a User-Agent, neither of
+    /// which is a secret, so it should not carry over silently.
+    #[serde(default)]
+    pub key_hash: String,
     pub label: String,
     pub remembered_at: String,
 }

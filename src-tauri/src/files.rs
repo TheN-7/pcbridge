@@ -148,6 +148,43 @@ fn nearest_existing(path: &Path) -> (PathBuf, PathBuf) {
     (existing, tail)
 }
 
+/// A `Content-Disposition` value that survives a non-ASCII filename.
+///
+/// The quoted `filename=` form is ASCII by the grammar, so `café.txt` or
+/// anything in CJK arrived mangled. RFC 6266 answers this with a second
+/// `filename*` parameter carrying the real UTF-8 name percent-encoded;
+/// browsers that understand it prefer it, and older ones fall back to
+/// the ASCII approximation rather than getting nothing.
+///
+/// The fallback also drops quotes, backslashes and control characters —
+/// the last of which would otherwise be an attempt to inject a header,
+/// caught today only because the `http` crate refuses such values and
+/// turns the download into a 500.
+fn content_disposition(name: &str) -> String {
+    let ascii: String = name
+        .chars()
+        .map(|c| {
+            if c == '"' || c == '\\' || !(c.is_ascii_graphic() || c == ' ') {
+                '_'
+            } else {
+                c
+            }
+        })
+        .collect();
+
+    let mut encoded = String::new();
+    for byte in name.as_bytes() {
+        match byte {
+            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'.' | b'_' | b'~' => {
+                encoded.push(*byte as char)
+            }
+            _ => encoded.push_str(&format!("%{byte:02X}")),
+        }
+    }
+
+    format!("attachment; filename=\"{ascii}\"; filename*=UTF-8''{encoded}")
+}
+
 fn relative_to(root: &Path, path: &Path) -> String {
     root.canonicalize()
         .ok()
@@ -271,7 +308,7 @@ pub async fn download(
             (header::CONTENT_LENGTH, len.to_string()),
             (
                 header::CONTENT_DISPOSITION,
-                format!("attachment; filename=\"{}\"", name.replace('"', "'")),
+                content_disposition(&name),
             ),
         ],
         body,
@@ -372,10 +409,7 @@ pub async fn download_zip(
             (header::CONTENT_TYPE, "application/zip".to_string()),
             (
                 header::CONTENT_DISPOSITION,
-                format!(
-                    "attachment; filename=\"{}\"",
-                    archive_name.replace('"', "'")
-                ),
+                content_disposition(&archive_name),
             ),
         ],
         body,
@@ -740,7 +774,21 @@ pub async fn rename(
     if !target.exists() {
         return Err(missing("That item doesn't exist"));
     }
-    if q.new_name.contains(['/', '\\']) {
+    // The new name must be exactly one ordinary path component.
+    //
+    // Rejecting `/` and `\` alone was not enough. On Windows a
+    // drive-relative name like `C:evil.txt` contains neither, and
+    // `PathBuf::push` is documented to replace the base outright when
+    // its argument carries a prefix but no root — so the destination
+    // became `C:evil.txt`, and the rename moved the file clean out of
+    // the shared folder. `Component::Normal` is the precise statement of
+    // what a name may be: not `..`, not a root, not a drive prefix, and
+    // containing no separator of its own.
+    let mut parts = Path::new(&q.new_name).components();
+    if !matches!(parts.next(), Some(Component::Normal(_))) {
+        return Err(bad("That isn't a valid name"));
+    }
+    if parts.next().is_some() {
         return Err(bad("A name can't contain a path separator"));
     }
 

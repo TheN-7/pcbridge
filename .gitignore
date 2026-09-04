@@ -39,3 +39,10 @@ update_secrets.*
 .idea/
 .DS_Store
 Thumbs.db
+
+# ---- stray build output ----
+# dist/ above covers the bundler's own output directory. This catches an
+# installer copied somewhere else in the tree to be tested or attached to
+# a release: 4 MB, and once committed it is in every clone forever.
+*.exe
+*.msi

@@ -124,8 +124,15 @@ export type ConnectionState =
 const PLACEHOLDER: Snapshot = {
   serving: false,
   settings: {
-    sharedFolder: "C:\\Users\\flori\\Shared",
-    pin: "483920",
+    // Neutral on purpose. These values are compiled into the shipped
+    // binary and are on screen for the moment before the first snapshot
+    // arrives, so a developer's real username, machine name and network
+    // addresses should not be among them — every user would briefly see
+    // them, and anyone reading the executable finds them as plain text.
+    // Blank fields also read honestly as "nothing yet" rather than as
+    // settings someone might try to correct.
+    sharedFolder: "",
+    pin: "------",
     networkMode: "https",
     httpsPort: 8000,
     httpPort: 8001,
@@ -134,13 +141,13 @@ const PLACEHOLDER: Snapshot = {
     requirePinEveryTime: false,
   },
   server: {
-    hostname: "FLORIND-PC",
-    platform: "Windows 11",
-    lanAddress: "192.168.1.42:8000",
-    tailscaleAddress: "100.84.19.7:8000",
-    fingerprint: "A4:9F:2C:7B:11:E0:5D:38:C6:0A:94:FF",
-    storageFree: 312_100_000_000,
-    storageTotal: 475_900_000_000,
+    hostname: "",
+    platform: "",
+    lanAddress: null,
+    tailscaleAddress: null,
+    fingerprint: "",
+    storageFree: 0,
+    storageTotal: 0,
   },
   transfers: [],
   clients: [],
