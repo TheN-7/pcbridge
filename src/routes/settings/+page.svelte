@@ -99,6 +99,15 @@
     await bridge.updateSettings({ theme });
   }
 
+  async function toggleAskEveryTime(enabled: boolean) {
+    await bridge.updateSettings({ requirePinEveryTime: enabled });
+    flash(
+      enabled
+        ? "Every connection will wait for you from now on."
+        : "Remembered devices can reconnect without asking again.",
+    );
+  }
+
   async function toggleAutostart(enabled: boolean) {
     await bridge.updateSettings({ startWithWindows: enabled });
     if (!isTauri()) return;
@@ -158,6 +167,23 @@
         </button>
         <button class="btn ghost" onclick={newPin}>Generate</button>
       </div>
+    </div>
+
+    <div class="field">
+      <label class="toggle">
+        <input
+          type="checkbox"
+          checked={bridge.settings.requirePinEveryTime}
+          onchange={(e) => toggleAskEveryTime(e.currentTarget.checked)}
+        />
+        <span>Ask me before every connection</span>
+      </label>
+      <p class="help">
+        Remembered devices normally reconnect without asking. With this on,
+        every connection waits for you here — including theirs. Your
+        remembered devices are kept, not cleared, so turning this back off
+        restores them.
+      </p>
     </div>
   </section>
 
