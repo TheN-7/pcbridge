@@ -1,5 +1,6 @@
 <script lang="ts">
   import LinkChannel from "$lib/components/LinkChannel.svelte";
+  import PairQr from "$lib/components/PairQr.svelte";
   import StatusPill from "$lib/components/StatusPill.svelte";
   import { bridge, formatBytes, formatRate } from "$lib/state/bridge.svelte";
 
@@ -130,6 +131,8 @@
       <a class="btn" href="/settings">Change folder</a>
       <button class="btn ghost" onclick={() => bridge.regeneratePin()}>New PIN</button>
     </div>
+
+    <PairQr />
 
     {#if bridge.lastError}
       <p class="error">{bridge.lastError}</p>

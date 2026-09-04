@@ -1,5 +1,6 @@
 <script lang="ts">
   import { bridge, type ConnectedClient } from "$lib/state/bridge.svelte";
+  import PairQr from "$lib/components/PairQr.svelte";
   import StatusPill from "$lib/components/StatusPill.svelte";
 
   const live = $derived(bridge.clients.filter((c) => c.streams > 0));
@@ -26,59 +27,6 @@
     if (l.includes("ipad")) return "▭";
     return "▪";
   }
-
-  // Pairing code. Held here rather than in the shared snapshot: it is a
-  // credential with a three-minute life, and nothing else in the app has
-  // any business seeing it.
-  let pairUrl = $state<string | null>(null);
-  let pairNonce = $state(0);
-  let pairLeft = $state(0);
-  let pairRemember = $state(true);
-  let pairTimer: ReturnType<typeof setInterval> | null = null;
-
-  let standing = $state(false);
-
-  // Changes whenever the PIN does, so the standing image is re-fetched
-  // rather than left showing a code for the old one. Derived from the
-  // PIN instead of being the PIN, which has no business in a URL here.
-  const standingNonce = $derived(
-    Array.from(bridge.settings.pin).reduce(
-      (hash, ch) => (hash * 31 + ch.charCodeAt(0)) | 0,
-      7,
-    ),
-  );
-
-  async function showPairCode() {
-    const issued = await bridge.newPairCode(pairRemember);
-    // No URL means the PC has no address a device could reach it on, so
-    // there is nothing to encode. Bailing here rather than starting a
-    // countdown against a code that can't be shown.
-    if (!issued?.url) return;
-
-    pairUrl = issued.url;
-    // Changes the image URL so the browser fetches the new code rather
-    // than showing the cached picture of the last one.
-    pairNonce = Date.now();
-    pairLeft = issued.expiresInSeconds;
-
-    if (pairTimer) clearInterval(pairTimer);
-    pairTimer = setInterval(() => {
-      pairLeft -= 1;
-      if (pairLeft <= 0) hidePairCode();
-    }, 1000);
-  }
-
-  function hidePairCode() {
-    if (pairTimer) clearInterval(pairTimer);
-    pairTimer = null;
-    pairUrl = null;
-    pairLeft = 0;
-  }
-
-  // Leaving the page must not leave the interval running.
-  $effect(() => () => {
-    if (pairTimer) clearInterval(pairTimer);
-  });
 
   let copied = $state(false);
   async function copyAddress() {
@@ -122,52 +70,7 @@
       </p>
     {/if}
 
-    <div class="pair">
-      {#if pairUrl}
-        <img class="qr" src={bridge.pairQrUrl(pairNonce)} alt="Pairing code" />
-        <p class="joinnote">
-          Point the phone's camera at this. No PIN needed — it connects
-          straight away. Expires in {pairLeft}s.
-        </p>
-        <button class="pairbtn ghost" onclick={hidePairCode}>Hide</button>
-      {:else if standing}
-        <img
-          class="qr"
-          src={bridge.standingQrUrl(standingNonce)}
-          alt="Standing code"
-        />
-        <p class="joinnote">
-          Carries the address and the PIN, and never expires — safe to
-          leave on screen or print. The device still has to be approved
-          here, which is what makes that safe.
-        </p>
-        <button class="pairbtn ghost" onclick={() => (standing = false)}>
-          Hide
-        </button>
-      {:else}
-        <label class="pairopt">
-          <input type="checkbox" bind:checked={pairRemember} />
-          <span>Remember whichever device scans it</span>
-        </label>
-        <div class="pairrow">
-          <button class="pairbtn" onclick={showPairCode} disabled={!address}>
-            Show a pairing code
-          </button>
-          <button
-            class="pairbtn ghost"
-            onclick={() => (standing = true)}
-            disabled={!address}
-          >
-            Standing code
-          </button>
-        </div>
-        <p class="joinnote">
-          A pairing code connects a phone with no PIN and no prompt, and
-          lasts three minutes. A standing code never changes: it fills the
-          PIN in for them, and you still approve the device here.
-        </p>
-      {/if}
-    </div>
+    <PairQr />
   </section>
 
   <!-- Connected now -->
@@ -321,69 +224,13 @@
     cursor: default;
   }
 
-  .pair {
-    display: flex;
-    flex-direction: column;
-    align-items: flex-start;
-    gap: var(--sp-2);
-    margin-top: var(--sp-3);
-    padding-top: var(--sp-3);
-    border-top: 1px solid var(--line-soft);
-  }
 
-  /* White plate around the code, whatever the theme. A QR inverted by a
-     dark background is one many scanners refuse outright, and the quiet
-     zone only works against light. */
-  .qr {
-    width: 176px;
-    height: 176px;
-    align-self: center;
-    padding: var(--sp-2);
-    background: #fff;
-    border-radius: var(--r-sm);
-  }
 
-  .pairrow {
-    display: flex;
-    gap: var(--sp-2);
-    flex-wrap: wrap;
-  }
 
-  .pairopt {
-    display: flex;
-    align-items: center;
-    gap: var(--sp-2);
-    font-size: var(--fs-sm);
-    color: var(--muted);
-    cursor: pointer;
-  }
 
-  .pairbtn {
-    border-radius: var(--r-sm);
-    padding: var(--sp-2) 14px;
-    font-family: var(--sans);
-    font-size: var(--fs-sm);
-    font-weight: 600;
-    border: 1px solid var(--line);
-    background: transparent;
-    color: var(--text);
-    cursor: pointer;
-    transition: background var(--fast) var(--ease);
-  }
 
-  .pairbtn:hover:not(:disabled) {
-    background: var(--surface);
-  }
 
-  .pairbtn:disabled {
-    opacity: 0.45;
-    cursor: default;
-  }
 
-  .pairbtn.ghost {
-    border-color: transparent;
-    color: var(--muted);
-  }
 
   .hint {
     font-size: 10px;
