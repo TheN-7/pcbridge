@@ -22,9 +22,27 @@ export interface Entry {
 
 const SESSION_KEY = "pcbridge.session";
 
-function storedSession(): string {
+/** Identifies this device to the PC across visits.
+ *
+ *  Issued by the server the first time a PIN is accepted here, and sent
+ *  back on every later attempt. This — not the address the device
+ *  happens to have, nor the User-Agent it reports — is what "remember
+ *  this device" actually remembers, so it keeps working after the phone
+ *  moves to another network and cannot be guessed by anything that
+ *  merely looks like this device from the outside.
+ *
+ *  Kept when a session ends: the session is the visit, this is the
+ *  device. Clearing site data forgets it, and the PC then asks for
+ *  approval once more, which is the correct outcome. */
+const DEVICE_KEY = "pcbridge.devicekey";
+
+function stored(key: string): string {
   if (typeof localStorage === "undefined") return "";
-  return localStorage.getItem(SESSION_KEY) ?? "";
+  return localStorage.getItem(key) ?? "";
+}
+
+function storedSession(): string {
+  return stored(SESSION_KEY);
 }
 
 class BrowserSession {
@@ -112,11 +130,18 @@ class BrowserSession {
       const res = await fetch("/api/session", {
         method: "POST",
         headers: { "content-type": "application/json" },
-        body: JSON.stringify({ pin }),
+        body: JSON.stringify({ pin, deviceKey: stored(DEVICE_KEY) || undefined }),
       });
 
       if (res.status === 401) {
         this.error = "That PIN wasn't accepted.";
+        return;
+      }
+      // The PC makes an address wait after repeated wrong PINs. Say so
+      // plainly with the wait attached, so this reads as a deliberate
+      // pause rather than the PC having stopped responding.
+      if (res.status === 429) {
+        this.error = (await res.text()) || "Too many attempts. Wait a moment.";
         return;
       }
       if (!res.ok) {
@@ -127,6 +152,7 @@ class BrowserSession {
       const body = await res.json();
       this.#sid = body.sessionId;
       localStorage.setItem(SESSION_KEY, this.#sid);
+      if (body.deviceKey) localStorage.setItem(DEVICE_KEY, body.deviceKey);
 
       if (body.status === "approved") {
         this.phase = "ready";

@@ -191,16 +191,12 @@ async fn snapshot(State(state): State<SharedState>) -> Response {
         .into_response()
 }
 
-/// Rejects anything without the current PIN.
-///
-/// Accepted as an `X-PIN` header or a `pin` query parameter. The query
-/// form exists because a browser download or an `EventSource` cannot set
-/// headers — without it, downloading a file from a phone would be
-/// impossible without inventing a second token scheme.
-///
-/// Compared in constant time: a byte-by-byte early-exit comparison on a
-/// six-digit PIN over a LAN is a genuinely measurable oracle.
 /// Gates every browser request on an approved session.
+///
+/// The session id travels as a `sid` query parameter or an `X-Session`
+/// header. The query form exists because a browser download or an
+/// `EventSource` cannot set headers — without it, downloading a file
+/// from a phone would need a second token scheme invented for it.
 ///
 /// The PIN is checked once, when a session is opened — not on every
 /// request. That's deliberate: it keeps the PIN out of download URLs
@@ -303,14 +299,23 @@ fn percent_decode(value: &str) -> String {
 }
 
 #[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
 struct OpenSessionBody {
     pin: String,
+    /// The key this browser kept from a previous visit, if any. Absent
+    /// on a device's first connection, and after the user clears site
+    /// data — both of which simply mean it waits for approval again.
+    #[serde(default)]
+    device_key: Option<String>,
 }
 
 #[derive(serde::Serialize)]
 #[serde(rename_all = "camelCase")]
 struct SessionReply {
     session_id: String,
+    /// Store this and send it back next time. It is what makes
+    /// "remember this device" survive a change of address.
+    device_key: String,
     status: crate::model::SessionStatus,
 }
 
@@ -320,12 +325,7 @@ async fn open_session(
     client: Option<axum::Extension<ClientId>>,
     Json(body): Json<OpenSessionBody>,
 ) -> Response {
-    let expected = state.settings().pin;
-    if !constant_time_eq(body.pin.as_bytes(), expected.as_bytes()) {
-        return (StatusCode::UNAUTHORIZED, "That PIN wasn't accepted.").into_response();
-    }
-
-    let Some(axum::Extension(ClientId(device_id))) = client else {
+    let Some(axum::Extension(ClientId(client_id))) = client else {
         return (
             StatusCode::INTERNAL_SERVER_ERROR,
             "Could not identify this device.",
@@ -333,12 +333,35 @@ async fn open_session(
             .into_response();
     };
 
-    let label = state.client_label(&device_id);
-    let address = state.client_address(&device_id);
-    let session = state.begin_session(&device_id, &label, &address);
+    let label = state.client_label(&client_id);
+    let address = state.client_address(&client_id);
+
+    // Checked before the PIN, so a caller that is already being made to
+    // wait gains nothing by guessing again — and so a correct guess
+    // arriving mid-backoff doesn't skip the queue.
+    if let Some(wait) = state.pin_retry_delay(&address) {
+        let secs = wait.as_secs().max(1);
+        return (
+            StatusCode::TOO_MANY_REQUESTS,
+            [(axum::http::header::RETRY_AFTER, secs.to_string())],
+            format!("Too many wrong PINs. Try again in {secs}s."),
+        )
+            .into_response();
+    }
+
+    let expected = state.settings().pin;
+    if !constant_time_eq(body.pin.as_bytes(), expected.as_bytes()) {
+        state.record_pin_failure(&address);
+        return (StatusCode::UNAUTHORIZED, "That PIN wasn't accepted.").into_response();
+    }
+    state.clear_pin_failures(&address);
+
+    let (session, device_key) =
+        state.begin_session(&label, &address, body.device_key.as_deref());
 
     Json(SessionReply {
         session_id: session.id,
+        device_key,
         status: session.status,
     })
     .into_response()
