@@ -170,6 +170,7 @@ fn api_routes() -> Router<SharedState> {
         .route("/api/settings/pin/regenerate", post(regenerate_pin))
         .route("/api/pair-code", post(new_pair_code))
         .route("/api/pair-qr", get(pair_qr))
+        .route("/api/standing-qr", get(standing_qr))
         .route("/api/sessions/{id}/resolve", post(resolve_session))
         .route("/api/remembered/{id}/forget", post(forget_device))
         .route("/api/transfers/{id}/cancel", post(cancel_transfer))
@@ -461,10 +462,33 @@ async fn pair_qr(State(state): State<SharedState>) -> Response {
             .into_response();
     };
 
-    match qr_svg(&url) {
+    qr_response(&url)
+}
+
+/// The standing QR: the PIN rather than a one-time code.
+///
+/// Separate route rather than a flag on the one above, because the two
+/// encode different things with different lifetimes and it should be
+/// obvious at the call site which one the interface is showing.
+async fn standing_qr(State(state): State<SharedState>) -> Response {
+    match state.standing_url() {
+        Some(url) => qr_response(&url),
+        None => (
+            StatusCode::CONFLICT,
+            "This PC isn't on a network a device could reach it on.",
+        )
+            .into_response(),
+    }
+}
+
+fn qr_response(url: &str) -> Response {
+    match qr_svg(url) {
         Some(svg) => (
             [
                 (axum::http::header::CONTENT_TYPE, "image/svg+xml"),
+                // Both codes are credentials. A cached copy sitting in
+                // the webview after the PIN changes would keep showing a
+                // code that no longer works.
                 (axum::http::header::CACHE_CONTROL, "no-store"),
             ],
             svg,
@@ -472,7 +496,7 @@ async fn pair_qr(State(state): State<SharedState>) -> Response {
             .into_response(),
         None => (
             StatusCode::INTERNAL_SERVER_ERROR,
-            "Couldn't draw that pairing code.",
+            "Couldn't draw that code.",
         )
             .into_response(),
     }

@@ -36,6 +36,18 @@
   let pairRemember = $state(true);
   let pairTimer: ReturnType<typeof setInterval> | null = null;
 
+  let standing = $state(false);
+
+  // Changes whenever the PIN does, so the standing image is re-fetched
+  // rather than left showing a code for the old one. Derived from the
+  // PIN instead of being the PIN, which has no business in a URL here.
+  const standingNonce = $derived(
+    Array.from(bridge.settings.pin).reduce(
+      (hash, ch) => (hash * 31 + ch.charCodeAt(0)) | 0,
+      7,
+    ),
+  );
+
   async function showPairCode() {
     const issued = await bridge.newPairCode(pairRemember);
     // No URL means the PC has no address a device could reach it on, so
@@ -118,17 +130,41 @@
           straight away. Expires in {pairLeft}s.
         </p>
         <button class="pairbtn ghost" onclick={hidePairCode}>Hide</button>
+      {:else if standing}
+        <img
+          class="qr"
+          src={bridge.standingQrUrl(standingNonce)}
+          alt="Standing code"
+        />
+        <p class="joinnote">
+          Carries the address and the PIN, and never expires — safe to
+          leave on screen or print. The device still has to be approved
+          here, which is what makes that safe.
+        </p>
+        <button class="pairbtn ghost" onclick={() => (standing = false)}>
+          Hide
+        </button>
       {:else}
         <label class="pairopt">
           <input type="checkbox" bind:checked={pairRemember} />
           <span>Remember whichever device scans it</span>
         </label>
-        <button class="pairbtn" onclick={showPairCode} disabled={!address}>
-          Show a pairing code
-        </button>
+        <div class="pairrow">
+          <button class="pairbtn" onclick={showPairCode} disabled={!address}>
+            Show a pairing code
+          </button>
+          <button
+            class="pairbtn ghost"
+            onclick={() => (standing = true)}
+            disabled={!address}
+          >
+            Standing code
+          </button>
+        </div>
         <p class="joinnote">
-          Skips typing the address and the PIN. Good for three minutes,
-          and for one device.
+          A pairing code connects a phone with no PIN and no prompt, and
+          lasts three minutes. A standing code never changes: it fills the
+          PIN in for them, and you still approve the device here.
         </p>
       {/if}
     </div>
@@ -305,6 +341,12 @@
     padding: var(--sp-2);
     background: #fff;
     border-radius: var(--r-sm);
+  }
+
+  .pairrow {
+    display: flex;
+    gap: var(--sp-2);
+    flex-wrap: wrap;
   }
 
   .pairopt {

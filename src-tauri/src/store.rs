@@ -769,19 +769,36 @@ impl AppState {
         Some(current.remember)
     }
 
-    /// What a device should open to pair, or `None` when this machine
-    /// has no LAN address.
+    /// The address a device should open, with `query` attached, or
+    /// `None` when this machine has no LAN address.
     ///
-    /// Always the HTTPS listener: the plain-HTTP one is bound to
-    /// loopback and serves this window only, so it is not reachable from
-    /// a phone at all. That does mean a scan lands on a self-signed
-    /// certificate warning — unavoidable while no authority will vouch
-    /// for a private address, and the reason the fingerprint is on the
-    /// Settings page to check against.
-    pub fn pair_url(&self, code: &str) -> Option<String> {
+    /// The scheme follows the network mode. The device listener serves
+    /// plain HTTP when that is what's selected, on the same port, so a
+    /// URL that always said https would send phones into a TLS handshake
+    /// against a plain socket and simply fail to load.
+    fn device_url(&self, query: &str) -> Option<String> {
+        let scheme = self.settings().network_mode.scheme();
         self.server_info()
             .lan_address
-            .map(|addr| format!("https://{addr}/?pair={code}"))
+            .map(|addr| format!("{scheme}://{addr}/?{query}"))
+    }
+
+    /// What a device should open to spend a one-time pairing code.
+    pub fn pair_url(&self, code: &str) -> Option<String> {
+        self.device_url(&format!("pair={code}"))
+    }
+
+    /// A standing address carrying the PIN itself.
+    ///
+    /// Unlike a pairing code this never expires and never changes, so it
+    /// can be left on screen or printed. That is also exactly why it does
+    /// not approve anything: it fills the PIN in, and the connection
+    /// still waits for a person here. A photograph of it is worth no more
+    /// than knowing the PIN, which is the property that makes leaving it
+    /// up defensible.
+    pub fn standing_url(&self) -> Option<String> {
+        let pin = self.settings().pin;
+        self.device_url(&format!("pin={}", percent_encode(&pin)))
     }
 
     /// The code currently on screen, for rendering its QR. Does not
@@ -850,6 +867,24 @@ fn new_device_key() -> String {
     (0..4)
         .map(|_| format!("{:016x}", rand::random::<u64>()))
         .collect()
+}
+
+/// Percent-encodes a value for use in a query string.
+///
+/// The PIN is whatever someone typed into Settings — spaces, `&`, `#`
+/// and `+` are all allowed there, and any of them would otherwise cut
+/// the URL short or arrive as something else.
+fn percent_encode(value: &str) -> String {
+    let mut out = String::new();
+    for byte in value.as_bytes() {
+        match byte {
+            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'.' | b'_' | b'~' => {
+                out.push(*byte as char)
+            }
+            _ => out.push_str(&format!("%{byte:02X}")),
+        }
+    }
+    out
 }
 
 fn hash_device_key(key: &str) -> String {

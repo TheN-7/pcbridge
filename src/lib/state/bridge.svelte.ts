@@ -443,6 +443,15 @@ class Bridge {
     return withPin(`${this.#apiBase}/api/pair-qr?v=${nonce}`);
   }
 
+  /** The standing QR, which carries the PIN and doesn't expire.
+   *
+   *  `nonce` is derived from the PIN by the caller, not the PIN itself:
+   *  the point of the separate image endpoint is that the credential
+   *  never appears in a URL on this side. */
+  standingQrUrl(nonce: number): string {
+    return withPin(`${this.#apiBase}/api/standing-qr?v=${nonce}`);
+  }
+
 
   cancelTransfer(id: string) { return this.#post(`/api/transfers/${id}/cancel`); }
 

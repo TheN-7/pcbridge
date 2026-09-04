@@ -70,9 +70,22 @@ class BrowserSession {
     // A scanned QR lands here with ?pair=... attached. Spend it before
     // anything else: it is one use and short lived, and it settles both
     // the PIN and the approval in one step.
-    const scanned = new URLSearchParams(location.search).get("pair");
+    const query = new URLSearchParams(location.search);
+
+    const scanned = query.get("pair");
     if (scanned) {
       await this.#pairWith(scanned);
+      return;
+    }
+
+    // The standing QR carries the PIN instead. It saves the typing but
+    // not the asking: this goes through the ordinary route, so the
+    // connection still waits for someone at the PC. That is what makes a
+    // code safe to leave on a screen or print out.
+    const suppliedPin = query.get("pin");
+    if (suppliedPin) {
+      this.#stripQuery("pin");
+      await this.submitPin(suppliedPin);
       return;
     }
 
@@ -203,10 +216,19 @@ class BrowserSession {
   }
 
   #stripPairCode() {
+    this.#stripQuery("pair");
+  }
+
+  /** Removes a credential from the address bar without navigating.
+   *
+   *  Left there it would sit in history and in bookmarks, be re-sent on
+   *  every reload, and be caught by the next screenshot — and for the
+   *  standing code that credential is the PIN itself. */
+  #stripQuery(key: string) {
     if (typeof history === "undefined") return;
     const url = new URL(location.href);
-    if (!url.searchParams.has("pair")) return;
-    url.searchParams.delete("pair");
+    if (!url.searchParams.has(key)) return;
+    url.searchParams.delete(key);
     history.replaceState(null, "", `${url.pathname}${url.search}${url.hash}`);
   }
 
