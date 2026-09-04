@@ -120,7 +120,14 @@ jobs:
           # stops the two disagreeing in the first place.
           tagName: ${{ startsWith(github.ref, 'refs/tags/') && github.ref_name || '' }}
           releaseName: ${{ startsWith(github.ref, 'refs/tags/') && format('pcbridge {0}', github.ref_name) || '' }}
-          releaseDraft: true
+          # Published outright, not held as a draft. A draft is the safer
+          # default -- it lets you check the installer before anyone can
+          # download it -- but it only appears to people with write access
+          # and needs a manual Publish, which reads as "the release never
+          # happened". Pushing a tag is already a deliberate act; this
+          # makes it do the whole job. Delete the release if a build turns
+          # out bad.
+          releaseDraft: false
           prerelease: false
 
       # Branch and PR builds have nothing published to, so the installers are
