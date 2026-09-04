@@ -53,6 +53,15 @@ pub struct AppState {
     /// preferable to locking someone out of their own machine across one.
     pin_failures: Mutex<std::collections::HashMap<String, PinFailures>>,
 
+    /// Transfers whose Cancel button has been pressed.
+    ///
+    /// Marking the row cancelled was never enough on its own: the loops
+    /// in `files.rs` that actually move bytes had no way to hear about
+    /// it, so a "cancelled" download went on downloading and a cancelled
+    /// upload still landed its file. Those loops now check this between
+    /// chunks, which is the only place a stop can take effect.
+    cancelled: RwLock<std::collections::HashSet<String>>,
+
     /// Tells the network listener to restart under a different scheme.
     /// A watch channel rather than a broadcast: only the latest value
     /// matters, and a listener that missed an intermediate flip should
@@ -124,6 +133,7 @@ impl AppState {
             sessions: RwLock::new(std::collections::HashMap::new()),
             remembered: RwLock::new(remembered),
             pin_failures: Mutex::new(std::collections::HashMap::new()),
+            cancelled: RwLock::new(std::collections::HashSet::new()),
             mode_tx,
         });
 
@@ -343,12 +353,17 @@ impl AppState {
         let key_hash = hash_device_key(&key);
         let device_id = device_id_from_hash(&key_hash);
 
-        let remembered = self
-            .remembered
-            .read()
-            .unwrap()
-            .iter()
-            .any(|d| !d.key_hash.is_empty() && d.key_hash == key_hash);
+        // "Ask me every time" ignores the remembered list rather than
+        // emptying it, so turning the setting back off restores the
+        // devices that were already trusted instead of making you
+        // approve every one of them again.
+        let remembered = !self.settings().require_pin_every_time
+            && self
+                .remembered
+                .read()
+                .unwrap()
+                .iter()
+                .any(|d| !d.key_hash.is_empty() && d.key_hash == key_hash);
 
         let session = Session {
             id: random_id(),
@@ -621,6 +636,10 @@ impl AppState {
     /// actually waiting on, and throttling it would leave a finished
     /// transfer looking stuck at 98%.
     pub fn finish_transfer(&self, id: &str, state: TransferState, error: Option<String>) {
+        // The loop carrying this transfer has stopped, so nothing is left
+        // to ask. Clearing here is what keeps the set from growing for
+        // the life of the process.
+        self.cancelled.write().unwrap().remove(id);
         {
             let mut transfers = self.transfers.write().unwrap();
             if let Some(transfer) = transfers.iter_mut().find(|t| t.id == id) {
@@ -656,15 +675,40 @@ impl AppState {
         self.publish();
     }
 
+    /// Marks a transfer cancelled *and* tells the loop moving its bytes
+    /// to stop.
+    ///
+    /// Only ever flags a transfer that is still running. Cancelling one
+    /// that already finished would leave its id in the set forever,
+    /// since nothing is left to notice and clear it.
     pub fn cancel_transfer(&self, id: &str) {
-        {
+        let running = {
             let mut transfers = self.transfers.write().unwrap();
-            if let Some(t) = transfers.iter_mut().find(|t| t.id == id) {
-                t.state = TransferState::Cancelled;
-                t.rate = None;
+            match transfers.iter_mut().find(|t| t.id == id) {
+                Some(t) if t.state == TransferState::Active
+                    || t.state == TransferState::Queued =>
+                {
+                    t.state = TransferState::Cancelled;
+                    t.rate = None;
+                    true
+                }
+                _ => false,
             }
+        };
+
+        if running {
+            self.cancelled.write().unwrap().insert(id.to_string());
+            self.publish();
         }
-        self.publish();
+    }
+
+    /// Whether the loop carrying this transfer should give up now.
+    ///
+    /// Read between chunks, so the cost is one uncontended read lock per
+    /// 64 KB rather than anything measurable against the disk and socket
+    /// work happening either side of it.
+    pub fn is_cancelled(&self, id: &str) -> bool {
+        self.cancelled.read().unwrap().contains(id)
     }
 
     /// Serialize once, hand the same string to everyone. A send error

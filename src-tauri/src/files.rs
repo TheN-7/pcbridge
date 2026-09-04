@@ -393,11 +393,23 @@ pub async fn download_zip(
                 zip_state.finish_transfer(&zip_id, crate::model::TransferState::Done, None);
             }
             Err(err) => {
-                zip_state.finish_transfer(
-                    &zip_id,
-                    crate::model::TransferState::Failed,
-                    Some(err.to_string()),
-                );
+                // A cancel arrives here as an error too, since that is
+                // how the copy loop stops. Reporting it as a failure
+                // would put a red row and an error message in front of
+                // someone who pressed Cancel and got what they asked for.
+                if zip_state.is_cancelled(&zip_id) {
+                    zip_state.finish_transfer(
+                        &zip_id,
+                        crate::model::TransferState::Cancelled,
+                        None,
+                    );
+                } else {
+                    zip_state.finish_transfer(
+                        &zip_id,
+                        crate::model::TransferState::Failed,
+                        Some(err.to_string()),
+                    );
+                }
             }
         }
     });
@@ -444,6 +456,17 @@ fn build_zip(
     let mut total = 0u64;
 
     for (path, name) in targets {
+        // Also checked here, not only inside `copy_into`: a selection of
+        // ten thousand small files spends most of its time between them,
+        // and a cancel that only lands mid-file would appear to do
+        // nothing at all on exactly that kind of archive.
+        if state.is_cancelled(transfer_id) {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::Interrupted,
+                "cancelled at the PC",
+            ));
+        }
+
         if path.is_file() {
             zip.start_file(name, options)?;
             total += copy_into(&mut zip, &path, state, transfer_id, total)?;
@@ -482,6 +505,13 @@ fn copy_into(
     let mut copied = 0u64;
 
     loop {
+        if state.is_cancelled(transfer_id) {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::Interrupted,
+                "cancelled at the PC",
+            ));
+        }
+
         let read = file.read(&mut buffer)?;
         if read == 0 {
             break;
@@ -553,6 +583,20 @@ where
         use std::task::Poll;
 
         let this = self.get_mut();
+
+        // Cancelled at the PC. Ending the body here is the whole effect:
+        // the response promised a Content-Length it will now not reach,
+        // so the client sees a download that stopped short — which is
+        // exactly what cancelling one is.
+        if !this.settled && this.state.is_cancelled(&this.id) {
+            this.settled = true;
+            this.state.finish_transfer(
+                &this.id,
+                crate::model::TransferState::Cancelled,
+                None,
+            );
+            return Poll::Ready(None);
+        }
 
         match std::pin::Pin::new(&mut this.inner).poll_next(cx) {
             Poll::Ready(Some(Ok(chunk))) => {
@@ -681,11 +725,19 @@ pub async fn upload(
             }
             Err(err) => {
                 let message = err.1.clone();
-                state.finish_transfer(
-                    &transfer_id,
-                    crate::model::TransferState::Failed,
-                    Some(message),
-                );
+                if state.is_cancelled(&transfer_id) {
+                    state.finish_transfer(
+                        &transfer_id,
+                        crate::model::TransferState::Cancelled,
+                        None,
+                    );
+                } else {
+                    state.finish_transfer(
+                        &transfer_id,
+                        crate::model::TransferState::Failed,
+                        Some(message),
+                    );
+                }
                 // A partial file is worse than no file — it looks like a
                 // successful transfer until someone opens it.
                 let _ = tokio::fs::remove_file(&dest).await;
@@ -709,6 +761,9 @@ async fn write_field(
     let mut written = 0u64;
 
     while let Some(chunk) = field.chunk().await.map_err(failed)? {
+        if state.is_cancelled(transfer_id) {
+            return Err(bad("Cancelled at the PC."));
+        }
         file.write_all(&chunk).await.map_err(failed)?;
         written += chunk.len() as u64;
         // Throttled inside the store, so this is cheap to call per chunk.
