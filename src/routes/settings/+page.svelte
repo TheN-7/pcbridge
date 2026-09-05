@@ -99,6 +99,18 @@
     await bridge.updateSettings({ theme });
   }
 
+  // server.platform is `std::env::consts::OS` plus the architecture, so
+  // the interface can name the right operating system instead of
+  // assuming the one it was written on. The Linux build was telling
+  // people it would start with Windows.
+  const osName = $derived.by(() => {
+    const os = bridge.server.platform.split(" ")[0];
+    if (os === "windows") return "Windows";
+    if (os === "macos") return "macOS";
+    if (os === "linux") return "Linux";
+    return "this computer";
+  });
+
   async function toggleAskEveryTime(enabled: boolean) {
     await bridge.updateSettings({ requirePinEveryTime: enabled });
     flash(
@@ -116,7 +128,7 @@
       if (enabled) await auto.enable();
       else await auto.disable();
     } catch (err) {
-      error = `Saved, but couldn't change the Windows startup entry: ${err}`;
+      error = `Saved, but couldn't change the ${osName} startup entry: ${err}`;
     }
   }
 
@@ -255,7 +267,7 @@
           checked={bridge.settings.startWithWindows}
           onchange={(e) => toggleAutostart(e.currentTarget.checked)}
         />
-        <span>Start PC Bridge when I sign in to Windows</span>
+        <span>Start PC Bridge when I sign in to {osName}</span>
       </label>
     </div>
   </section>

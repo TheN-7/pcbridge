@@ -8,6 +8,7 @@
 
   const scheme = $derived(bridge.settings.networkMode === "http" ? "http" : "https");
   const address = $derived(bridge.server.lanAddress ?? "");
+  const isLinux = $derived(bridge.server.platform.startsWith("linux"));
 
   // Times arrive as unix seconds so the server needs no date library.
   function ago(unixSeconds: string): string {
@@ -67,6 +68,27 @@
       <p class="joinnote">
         The first visit from each device shows a security warning — tap
         Advanced, then Proceed. It's remembered after that.
+      </p>
+    {/if}
+
+    <!-- The address is right and the app is listening on every interface;
+         what stops it is usually the host firewall, which Tailscale gets
+         its own rule from and a LAN address doesn't. Worth saying here
+         rather than leaving people to conclude the address is wrong. -->
+    {#if isLinux}
+      <p class="joinnote">
+        If Tailscale works but the address above doesn't answer, the port
+        is blocked — most desktop Linux firewalls refuse incoming
+        connections by default. Open it with
+        <span class="mono">sudo ufw allow {bridge.settings.httpsPort}/tcp</span>,
+        or on Fedora
+        <span class="mono">
+          sudo firewall-cmd --add-port={bridge.settings.httpsPort}/tcp --permanent
+        </span>
+        followed by
+        <span class="mono">sudo firewall-cmd --reload</span>.
+        Wi-Fi with client isolation turned on will do the same thing, and
+        no firewall change fixes that one.
       </p>
     {/if}
 

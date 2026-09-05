@@ -78,6 +78,14 @@ pub struct AppState {
     /// matters, and a listener that missed an intermediate flip should
     /// still end up in the right final state.
     mode_tx: tokio::sync::watch::Sender<NetworkMode>,
+
+    /// Tells the network listener to bind or to let go of the port.
+    ///
+    /// `serving` above is what the interface renders; this is what makes
+    /// it true. Without it the flag was decoration: both listeners were
+    /// spawned at startup regardless, so the drive was reachable from
+    /// the moment the app opened and Start sharing only changed a label.
+    sharing_tx: tokio::sync::watch::Sender<bool>,
 }
 
 pub type SharedState = Arc<AppState>;
@@ -176,6 +184,7 @@ impl AppState {
 
         let (tx, _) = broadcast::channel(64);
         let (mode_tx, _) = tokio::sync::watch::channel(settings.network_mode);
+        let (sharing_tx, _) = tokio::sync::watch::channel(false);
 
         let state = Arc::new(Self {
             data_dir,
@@ -193,6 +202,7 @@ impl AppState {
             rate_samples: Mutex::new(std::collections::HashMap::new()),
             pair_code: Mutex::new(None),
             mode_tx,
+            sharing_tx,
         });
 
         // Defaults include a freshly generated PIN. Writing them out on
@@ -273,6 +283,9 @@ impl AppState {
 
     pub fn set_serving(&self, serving: bool) {
         *self.serving.write().unwrap() = serving;
+        // Sent before publishing so the listener is already coming up
+        // or going down by the time the interface says it has.
+        let _ = self.sharing_tx.send(serving);
         self.publish();
     }
 
@@ -600,6 +613,10 @@ impl AppState {
 
     pub fn subscribe_mode(&self) -> tokio::sync::watch::Receiver<NetworkMode> {
         self.mode_tx.subscribe()
+    }
+
+    pub fn subscribe_sharing(&self) -> tokio::sync::watch::Receiver<bool> {
+        self.sharing_tx.subscribe()
     }
 
     pub fn apply_settings(&self, patch: SettingsPatch) -> Result<()> {

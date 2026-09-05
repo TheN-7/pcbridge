@@ -837,6 +837,21 @@ pub async fn serve_https(
 /// to finish, and the new one binds the same port. Without a common
 /// shutdown mechanism this would have to be "restart the app to apply",
 /// which isn't a toggle in any useful sense.
+/// Winds the current listener down and waits for the port to be free.
+///
+/// The sleep is not politeness: rebinding immediately races the socket
+/// the old listener is still letting go of, and the new one fails with
+/// "address in use" — which, since this loop treats that as fatal, would
+/// take the whole network listener down for the rest of the session.
+async fn stop(
+    handle: &axum_server::Handle,
+    listening: &mut tokio::task::JoinHandle<anyhow::Result<()>>,
+) {
+    handle.graceful_shutdown(Some(Duration::from_secs(2)));
+    let _ = listening.await;
+    tokio::time::sleep(Duration::from_millis(250)).await;
+}
+
 async fn supervise_network(
     state: SharedState,
     port: u16,
@@ -844,9 +859,24 @@ async fn supervise_network(
     key: std::path::PathBuf,
 ) -> anyhow::Result<()> {
     let mut modes = state.subscribe_mode();
+    let mut sharing = state.subscribe_sharing();
 
     loop {
         let mode = *modes.borrow_and_update();
+
+        // Nothing is bound while sharing is off — the port is closed
+        // rather than open and refusing. Both listeners used to start
+        // with the app regardless, so the drive was reachable from the
+        // moment the window opened and Start sharing only moved a label.
+        if !*sharing.borrow_and_update() {
+            tracing::info!("device api idle: sharing is off");
+            tokio::select! {
+                result = modes.changed() => if result.is_err() { return Ok(()) },
+                result = sharing.changed() => if result.is_err() { return Ok(()) },
+            }
+            continue;
+        }
+
         let addr = SocketAddr::from(([0, 0, 0, 0], port));
         let handle = axum_server::Handle::new();
         // Connect info is what gives `track_client` the peer address.
@@ -857,7 +887,7 @@ async fn supervise_network(
 
         tracing::info!("device api listening on {}://{addr}", mode.scheme());
 
-        let mut serving = {
+        let mut listening = {
             let handle = handle.clone();
             let cert = cert.clone();
             let key = key.clone();
@@ -886,16 +916,17 @@ async fn supervise_network(
                     // The store is gone, so nothing will ever ask for
                     // another switch. Keep serving rather than tearing
                     // the listener down for no reason.
-                    return serving.await?;
+                    return listening.await?;
                 }
-                handle.graceful_shutdown(Some(Duration::from_secs(2)));
-                let _ = serving.await;
-                // Give the OS a moment to release the port before
-                // rebinding it, or the new listener races the old socket
-                // and fails with "address in use".
-                tokio::time::sleep(Duration::from_millis(250)).await;
+                stop(&handle, &mut listening).await;
             }
-            outcome = &mut serving => {
+            result = sharing.changed() => {
+                if result.is_err() {
+                    return listening.await?;
+                }
+                stop(&handle, &mut listening).await;
+            }
+            outcome = &mut listening => {
                 // The listener stopped on its own — a bound port, or a
                 // certificate that couldn't be read. Report it and stop;
                 // the window stays usable so the setting can be changed.
