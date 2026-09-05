@@ -62,6 +62,10 @@ pub struct AppState {
     /// chunks, which is the only place a stop can take effect.
     cancelled: RwLock<std::collections::HashSet<String>>,
 
+    /// Per-transfer speed measurement. Keyed by transfer id, dropped
+    /// when the transfer finishes. See `sample_rate`.
+    rate_samples: Mutex<std::collections::HashMap<String, RateSample>>,
+
     /// The pairing code currently on screen, if any.
     ///
     /// One at a time and short lived: a code is only meaningful while
@@ -114,6 +118,27 @@ const PIN_MAX_DELAY: Duration = Duration::from_secs(30);
 /// Quiet period after which an address is forgiven and starts over.
 const PIN_FAILURE_TTL: Duration = Duration::from_secs(15 * 60);
 
+/// Bytes seen at a moment, for working out how fast a transfer is going.
+struct RateSample {
+    bytes: u64,
+    at: Instant,
+    /// Smoothed bytes per second. `None` until there are two samples to
+    /// measure between.
+    smoothed: Option<f64>,
+}
+
+/// How often progress reaches the interface, and so how often speed is
+/// measured. Fast enough to feel live, slow enough that a chunk taking
+/// under a millisecond isn't what the arithmetic is dividing by.
+const PROGRESS_INTERVAL: Duration = Duration::from_millis(250);
+
+/// How much of the previous reading to keep when smoothing the speed.
+///
+/// A raw quarter-second sample swings hard with disk caching and TCP
+/// windows. A number that flickers between 40 and 900 MB/s is harder to
+/// read than one that lags a little and settles.
+const RATE_SMOOTHING: f64 = 0.6;
+
 /// How many transfers to keep on the list.
 ///
 /// Every snapshot carries all of them to every client, and every
@@ -165,6 +190,7 @@ impl AppState {
             remembered: RwLock::new(remembered),
             pin_failures: Mutex::new(std::collections::HashMap::new()),
             cancelled: RwLock::new(std::collections::HashSet::new()),
+            rate_samples: Mutex::new(std::collections::HashMap::new()),
             pair_code: Mutex::new(None),
             mode_tx,
         });
@@ -669,15 +695,8 @@ impl AppState {
     /// place, where it can't be forgotten by a future caller.
     pub fn update_transfer_progress(&self, id: &str, done: u64, rate: Option<u64>) {
         let should_publish = {
-            let mut transfers = self.transfers.write().unwrap();
-            let Some(transfer) = transfers.iter_mut().find(|t| t.id == id) else {
-                return;
-            };
-            transfer.bytes_done = done;
-            transfer.rate = rate;
-
             let mut last = self.last_progress_publish.lock().unwrap();
-            if last.elapsed() >= Duration::from_millis(250) {
+            if last.elapsed() >= PROGRESS_INTERVAL {
                 *last = Instant::now();
                 true
             } else {
@@ -685,9 +704,70 @@ impl AppState {
             }
         };
 
+        // Measured once per publish, not per chunk. A 256 KB chunk can
+        // land in well under a millisecond, and dividing by that produces
+        // a figure that is mostly noise.
+        let measured = if should_publish {
+            self.sample_rate(id, done)
+        } else {
+            None
+        };
+
+        {
+            let mut transfers = self.transfers.write().unwrap();
+            let Some(transfer) = transfers.iter_mut().find(|t| t.id == id) else {
+                return;
+            };
+            transfer.bytes_done = done;
+            // Left alone between publishes, so the interface holds the
+            // last real reading rather than blanking out between ticks.
+            if let Some(measured) = rate.or(measured) {
+                transfer.rate = Some(measured);
+            }
+        }
+
         if should_publish {
             self.publish();
         }
+    }
+
+    /// Bytes per second for this transfer, from the last sample to now.
+    ///
+    /// `None` on the first call for a transfer — one sample is a reading,
+    /// not a rate — and whenever too little time has passed to divide by.
+    fn sample_rate(&self, id: &str, done: u64) -> Option<u64> {
+        let mut samples = self.rate_samples.lock().unwrap();
+        let now = Instant::now();
+
+        let Some(previous) = samples.get_mut(id) else {
+            samples.insert(
+                id.to_string(),
+                RateSample { bytes: done, at: now, smoothed: None },
+            );
+            return None;
+        };
+
+        let elapsed = now.duration_since(previous.at).as_secs_f64();
+
+        // `done` going backwards means the counter restarted rather than
+        // the transfer moving, so there is nothing to measure this time.
+        if elapsed < 0.05 || done < previous.bytes {
+            previous.bytes = done;
+            previous.at = now;
+            return previous.smoothed.map(|rate| rate as u64);
+        }
+
+        let instant = (done - previous.bytes) as f64 / elapsed;
+        let smoothed = match previous.smoothed {
+            Some(before) => before * RATE_SMOOTHING + instant * (1.0 - RATE_SMOOTHING),
+            None => instant,
+        };
+
+        previous.bytes = done;
+        previous.at = now;
+        previous.smoothed = Some(smoothed);
+
+        Some(smoothed as u64)
     }
 
     /// Terminal states always publish — this is the update people are
@@ -695,9 +775,10 @@ impl AppState {
     /// transfer looking stuck at 98%.
     pub fn finish_transfer(&self, id: &str, state: TransferState, error: Option<String>) {
         // The loop carrying this transfer has stopped, so nothing is left
-        // to ask. Clearing here is what keeps the set from growing for
-        // the life of the process.
+        // to ask, and nothing left to measure. Clearing both here is what
+        // keeps them from growing for the life of the process.
         self.cancelled.write().unwrap().remove(id);
+        self.rate_samples.lock().unwrap().remove(id);
         {
             let mut transfers = self.transfers.write().unwrap();
             if let Some(transfer) = transfers.iter_mut().find(|t| t.id == id) {

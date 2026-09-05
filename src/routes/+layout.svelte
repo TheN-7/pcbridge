@@ -5,6 +5,7 @@
   import { bridge } from "$lib/state/bridge.svelte";
   import BrowserApp from "$lib/browser/BrowserApp.svelte";
   import ApprovalPrompt from "$lib/components/ApprovalPrompt.svelte";
+  import TransferBar from "$lib/components/TransferBar.svelte";
 
   // The desktop window and a browser are different products, not the same
   // product with things hidden. Branching at the root keeps it that way:
@@ -97,6 +98,10 @@
     <div class="viewport">
       {@render children()}
     </div>
+
+    <!-- Outside .viewport so it doesn't scroll away with the page: a
+         transfer you started on Overview stays visible on Settings. -->
+    <TransferBar />
   </main>
 
   <nav class="tabbar" aria-label="Sections">
