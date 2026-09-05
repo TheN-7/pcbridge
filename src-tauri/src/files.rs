@@ -247,9 +247,66 @@ pub async fn list(
     Ok(Json(Listing { path, parent, entries }))
 }
 
+/// How much of a file to read at a time when serving it.
+///
+/// `ReaderStream` defaults to 4 KB. At gigabit that is roughly 28,000
+/// reads a second, and each one costs a round trip to tokio's blocking
+/// pool plus a progress update that takes a lock — pure overhead between
+/// the disk and the socket. 256 KB cuts that by two orders of magnitude
+/// for a quarter of a megabyte of buffer.
+const READ_CHUNK: usize = 256 * 1024;
+
+/// One byte range from a `Range` header, resolved against `len`.
+///
+/// `Ok(None)` means send the whole file; `Err(())` means the request
+/// asked for something that isn't there and deserves a 416.
+///
+/// Only a single range is honoured. Multipart ranges are in the spec and
+/// essentially nothing uses them for a plain file download — answering
+/// one by sending the whole file is unhelpful but correct, whereas
+/// half-implementing `multipart/byteranges` would not be.
+fn parse_range(header: Option<&str>, len: u64) -> Result<Option<(u64, u64)>, ()> {
+    let Some(raw) = header else { return Ok(None) };
+    let Some(spec) = raw.trim().strip_prefix("bytes=") else {
+        return Ok(None);
+    };
+    if spec.contains(',') {
+        return Ok(None);
+    }
+
+    let (from, to) = spec.split_once('-').ok_or(())?;
+    let (from, to) = (from.trim(), to.trim());
+
+    let (start, end) = match (from.is_empty(), to.is_empty()) {
+        // "bytes=-N" — the last N bytes.
+        (true, false) => {
+            let n: u64 = to.parse().map_err(|_| ())?;
+            if n == 0 {
+                return Err(());
+            }
+            (len.saturating_sub(n), len.saturating_sub(1))
+        }
+        // "bytes=N-" — from N to the end. This is the resume case.
+        (false, true) => (from.parse().map_err(|_| ())?, len.saturating_sub(1)),
+        // "bytes=N-M", clamped: asking past the end is not an error.
+        (false, false) => {
+            let start: u64 = from.parse().map_err(|_| ())?;
+            let end: u64 = to.parse().map_err(|_| ())?;
+            (start, end.min(len.saturating_sub(1)))
+        }
+        (true, true) => return Ok(None),
+    };
+
+    if len == 0 || start > end || start >= len {
+        return Err(());
+    }
+    Ok(Some((start, end)))
+}
+
 pub async fn download(
     State(state): State<SharedState>,
     Query(q): Query<PathQuery>,
+    headers: axum::http::HeaderMap,
     client: Option<axum::Extension<crate::server::ClientId>>,
 ) -> Result<Response, FileError> {
     let root = state.shared_root();
@@ -272,48 +329,102 @@ pub async fn download(
         .map(|axum::Extension(crate::server::ClientId(id))| state.client_label(&id))
         .unwrap_or_else(|| "This PC".to_string());
 
-    // Unlike an upload, the size is known up front, so this progress is a
-    // real percentage rather than a running total.
-    let transfer_id = crate::model::random_id();
-    state.add_transfer(crate::model::Transfer {
-        id: transfer_id.clone(),
-        name: name.clone(),
-        device_id: None,
-        device_name: recipient,
-        direction: crate::model::TransferDirection::Download,
-        state: crate::model::TransferState::Active,
-        bytes_done: 0,
-        bytes_total: len,
-        rate: None,
-        started_at: crate::server::now_iso(),
-        finished_at: None,
-        error: None,
-    });
+    let range = match parse_range(
+        headers.get(header::RANGE).and_then(|v| v.to_str().ok()),
+        len,
+    ) {
+        Ok(range) => range,
+        Err(()) => {
+            return Ok((
+                StatusCode::RANGE_NOT_SATISFIABLE,
+                [(header::CONTENT_RANGE, format!("bytes */{len}"))],
+            )
+                .into_response())
+        }
+    };
+
+    let (start, end) = range.unwrap_or((0, len.saturating_sub(1)));
+    let span = if len == 0 { 0 } else { end - start + 1 };
+
+    // A resumed or chunked fetch is the same download carrying on, not a
+    // new one. Recording every range would turn one 200 MB transfer into
+    // forty identical rows saying the same thing. The cost is that
+    // resuming from the middle isn't recorded as its own event — which
+    // it isn't.
+    let transfer_id = if range.map_or(true, |(from, _)| from == 0) {
+        let id = crate::model::random_id();
+        // Unlike an upload, the size is known up front, so this progress
+        // is a real percentage rather than a running total.
+        state.add_transfer(crate::model::Transfer {
+            id: id.clone(),
+            name: name.clone(),
+            device_id: None,
+            device_name: recipient,
+            direction: crate::model::TransferDirection::Download,
+            state: crate::model::TransferState::Active,
+            bytes_done: 0,
+            bytes_total: span,
+            rate: None,
+            started_at: crate::server::now_iso(),
+            finished_at: None,
+            error: None,
+        });
+        Some(id)
+    } else {
+        None
+    };
 
     // Streamed, not read into memory — a 4 GB video must not become 4 GB
     // of RAM on a machine that's also serving other requests.
-    let file = tokio::fs::File::open(&target).await.map_err(failed)?;
+    let mut file = tokio::fs::File::open(&target).await.map_err(failed)?;
+    if start > 0 {
+        use tokio::io::AsyncSeekExt;
+        file.seek(std::io::SeekFrom::Start(start))
+            .await
+            .map_err(failed)?;
+    }
+    // `take` even for a whole-file send, so both paths produce the same
+    // reader type — and so the body can never run past the length the
+    // Content-Length header just promised.
+    let reader = tokio::io::AsyncReadExt::take(file, span);
+
     let body = Body::from_stream(TrackedDownload {
-        inner: ReaderStream::new(file),
+        inner: ReaderStream::with_capacity(reader, READ_CHUNK),
         state: state.clone(),
         id: transfer_id,
         sent: 0,
-        total: len,
+        total: span,
         settled: false,
     });
 
-    Ok((
+    let mut response = (
+        if range.is_some() {
+            StatusCode::PARTIAL_CONTENT
+        } else {
+            StatusCode::OK
+        },
         [
             (header::CONTENT_TYPE, mime),
-            (header::CONTENT_LENGTH, len.to_string()),
-            (
-                header::CONTENT_DISPOSITION,
-                content_disposition(&name),
-            ),
+            (header::CONTENT_LENGTH, span.to_string()),
+            // Advertised even on a whole-file response: it is how a
+            // client knows it may resume this download later rather than
+            // starting a 20 GB file again from zero.
+            (header::ACCEPT_RANGES, "bytes".to_string()),
+            (header::CONTENT_DISPOSITION, content_disposition(&name)),
         ],
         body,
     )
-        .into_response())
+        .into_response();
+
+    if range.is_some() {
+        if let Ok(value) =
+            axum::http::HeaderValue::from_str(&format!("bytes {start}-{end}/{len}"))
+        {
+            response.headers_mut().insert(header::CONTENT_RANGE, value);
+        }
+    }
+
+    Ok(response)
 }
 
 /// Bulk download: several files and folders as one zip.
@@ -449,8 +560,14 @@ fn build_zip(
     // this work over a non-seekable stream at all. It also lifts the 4 GB
     // per-entry ceiling, which matters for exactly the kind of folder
     // someone bulk-downloads.
+    // Stored, not Deflated. What people bulk-download is photos, video
+    // and archives, all already compressed — deflating those spends a
+    // core to save almost nothing and caps the transfer at however fast
+    // one thread can compress, well below what the disk and a LAN can
+    // do. Storing makes the zip a container rather than a compressor,
+    // which is all it needs to be here.
     let options = SimpleFileOptions::default()
-        .compression_method(zip::CompressionMethod::Deflated)
+        .compression_method(zip::CompressionMethod::Stored)
         .large_file(true);
 
     let mut total = 0u64;
@@ -501,7 +618,10 @@ fn copy_into(
     use std::io::{Read, Write};
 
     let mut file = std::fs::File::open(path)?;
-    let mut buffer = vec![0u8; 64 * 1024];
+    // Same reasoning as READ_CHUNK: fewer, larger reads. This one is a
+    // plain blocking read on a dedicated thread, so the buffer is the
+    // whole cost.
+    let mut buffer = vec![0u8; READ_CHUNK];
     let mut copied = 0u64;
 
     loop {
@@ -560,7 +680,10 @@ impl std::io::Write for ChannelWriter {
 struct TrackedDownload<S> {
     inner: S,
     state: SharedState,
-    id: String,
+    /// `None` for a range that continues a download already on the list.
+    /// Those serve normally but record nothing, so one chunked fetch
+    /// stays one row — see `download`.
+    id: Option<String>,
     sent: u64,
     /// Expected size. Needed because the stream is often never polled to
     /// exhaustion — see the `Drop` impl.
@@ -588,40 +711,48 @@ where
         // the response promised a Content-Length it will now not reach,
         // so the client sees a download that stopped short — which is
         // exactly what cancelling one is.
-        if !this.settled && this.state.is_cancelled(&this.id) {
-            this.settled = true;
-            this.state.finish_transfer(
-                &this.id,
-                crate::model::TransferState::Cancelled,
-                None,
-            );
-            return Poll::Ready(None);
+        if let Some(id) = &this.id {
+            if !this.settled && this.state.is_cancelled(id) {
+                this.settled = true;
+                this.state.finish_transfer(
+                    id,
+                    crate::model::TransferState::Cancelled,
+                    None,
+                );
+                return Poll::Ready(None);
+            }
         }
 
         match std::pin::Pin::new(&mut this.inner).poll_next(cx) {
             Poll::Ready(Some(Ok(chunk))) => {
                 this.sent += chunk.len() as u64;
-                // Throttled inside the store, so per-chunk is cheap.
-                this.state.update_transfer_progress(&this.id, this.sent, None);
+                if let Some(id) = &this.id {
+                    // Throttled inside the store, so per-chunk is cheap.
+                    this.state.update_transfer_progress(id, this.sent, None);
+                }
                 Poll::Ready(Some(Ok(chunk)))
             }
             Poll::Ready(Some(Err(err))) => {
                 this.settled = true;
-                this.state.finish_transfer(
-                    &this.id,
-                    crate::model::TransferState::Failed,
-                    Some(err.to_string()),
-                );
+                if let Some(id) = &this.id {
+                    this.state.finish_transfer(
+                        id,
+                        crate::model::TransferState::Failed,
+                        Some(err.to_string()),
+                    );
+                }
                 Poll::Ready(Some(Err(err)))
             }
             Poll::Ready(None) => {
                 if !this.settled {
                     this.settled = true;
-                    this.state.finish_transfer(
-                        &this.id,
-                        crate::model::TransferState::Done,
-                        None,
-                    );
+                    if let Some(id) = &this.id {
+                        this.state.finish_transfer(
+                            id,
+                            crate::model::TransferState::Done,
+                            None,
+                        );
+                    }
                 }
                 Poll::Ready(None)
             }
@@ -644,12 +775,14 @@ impl<S> Drop for TrackedDownload<S> {
             return;
         }
 
+        let Some(id) = &self.id else { return };
+
         if self.sent >= self.total {
             self.state
-                .finish_transfer(&self.id, crate::model::TransferState::Done, None);
+                .finish_transfer(id, crate::model::TransferState::Done, None);
         } else {
             self.state.finish_transfer(
-                &self.id,
+                id,
                 crate::model::TransferState::Failed,
                 Some("The device stopped downloading before the file finished.".into()),
             );
@@ -757,7 +890,12 @@ async fn write_field(
     state: &SharedState,
     transfer_id: &str,
 ) -> Result<u64, FileError> {
-    let mut file = tokio::fs::File::create(dest).await.map_err(failed)?;
+    // Buffered: multipart hands over whatever came off the socket, often
+    // only a few KB, and every unbuffered write is its own trip to
+    // tokio's blocking pool. Batching them into 256 KB writes turns
+    // thousands of those per second into a handful.
+    let file = tokio::fs::File::create(dest).await.map_err(failed)?;
+    let mut file = tokio::io::BufWriter::with_capacity(READ_CHUNK, file);
     let mut written = 0u64;
 
     while let Some(chunk) = field.chunk().await.map_err(failed)? {

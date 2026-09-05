@@ -114,6 +114,14 @@ const PIN_MAX_DELAY: Duration = Duration::from_secs(30);
 /// Quiet period after which an address is forgiven and starts over.
 const PIN_FAILURE_TTL: Duration = Duration::from_secs(15 * 60);
 
+/// How many transfers to keep on the list.
+///
+/// Every snapshot carries all of them to every client, and every
+/// progress update looks one up by id, so this is a cap on both the
+/// bytes on the wire and the work done per chunk. Generous enough that
+/// the history stays useful for anyone who never presses Clear finished.
+const MAX_TRANSFERS: usize = 200;
+
 /// A pairing code shown on screen for a device to scan.
 struct PairCode {
     code: String,
@@ -621,7 +629,33 @@ impl AppState {
     }
 
     pub fn add_transfer(&self, transfer: Transfer) {
-        self.transfers.write().unwrap().push(transfer);
+        {
+            let mut transfers = self.transfers.write().unwrap();
+            transfers.push(transfer);
+
+            // Bounded. Nothing trimmed this list but the Clear finished
+            // button, so a long-running instance grew it forever — and
+            // every progress update scans it by id, so it got slower the
+            // longer the app stayed open, on top of every snapshot
+            // carrying the whole history to every client. Oldest
+            // finished rows go first; anything still moving is kept
+            // regardless of age.
+            if transfers.len() > MAX_TRANSFERS {
+                let mut budget = transfers.len() - MAX_TRANSFERS;
+                transfers.retain(|t| {
+                    let finished = !matches!(
+                        t.state,
+                        TransferState::Active | TransferState::Queued
+                    );
+                    if finished && budget > 0 {
+                        budget -= 1;
+                        false
+                    } else {
+                        true
+                    }
+                });
+            }
+        }
         self.publish();
     }
 
