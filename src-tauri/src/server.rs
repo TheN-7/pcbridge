@@ -837,21 +837,6 @@ pub async fn serve_https(
 /// to finish, and the new one binds the same port. Without a common
 /// shutdown mechanism this would have to be "restart the app to apply",
 /// which isn't a toggle in any useful sense.
-/// Winds the current listener down and waits for the port to be free.
-///
-/// The sleep is not politeness: rebinding immediately races the socket
-/// the old listener is still letting go of, and the new one fails with
-/// "address in use" — which, since this loop treats that as fatal, would
-/// take the whole network listener down for the rest of the session.
-async fn stop(
-    handle: &axum_server::Handle,
-    listening: &mut tokio::task::JoinHandle<anyhow::Result<()>>,
-) {
-    handle.graceful_shutdown(Some(Duration::from_secs(2)));
-    let _ = listening.await;
-    tokio::time::sleep(Duration::from_millis(250)).await;
-}
-
 async fn supervise_network(
     state: SharedState,
     port: u16,
@@ -918,13 +903,11 @@ async fn supervise_network(
                     // the listener down for no reason.
                     return listening.await?;
                 }
-                stop(&handle, &mut listening).await;
             }
             result = sharing.changed() => {
                 if result.is_err() {
                     return listening.await?;
                 }
-                stop(&handle, &mut listening).await;
             }
             outcome = &mut listening => {
                 // The listener stopped on its own — a bound port, or a
@@ -933,5 +916,16 @@ async fn supervise_network(
                 return outcome?;
             }
         }
+
+        // Only reached when a setting changed, since every other arm
+        // returns. Winding down here rather than in each arm keeps the
+        // sequence in one place and, incidentally, avoids naming
+        // axum_server::Handle's type parameter.
+        handle.graceful_shutdown(Some(Duration::from_secs(2)));
+        let _ = listening.await;
+        // Give the OS a moment to release the port before rebinding it,
+        // or the new listener races the old socket and fails with
+        // "address in use" — which this loop treats as fatal.
+        tokio::time::sleep(Duration::from_millis(250)).await;
     }
 }
